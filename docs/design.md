@@ -1314,3 +1314,13 @@ matching the Animations section above. Both are neutralised by the existing
 
 Bottom-centre on mobile (clearing the purchase bar), bottom-right from tablet up. Auto-dismisses
 after 3.5 seconds, capped at three visible, each individually dismissible.
+
+## Container scale correction
+
+The Phase 1 reset of `--container-*` was too broad. In Tailwind v4 that namespace also backs every
+`max-w-*` utility and the `@container` query variants, so clearing it silently disabled them — the
+confirmation modal rendered full width instead of 448px. Tailwind's width scale is restored
+alongside `--container-page` and `--container-content`; these are neutral layout measurements, not
+brand tokens, and are in scope by design.
+
+The colour, typography, radius and shadow resets stand unchanged.

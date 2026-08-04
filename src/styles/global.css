@@ -115,8 +115,15 @@
   --breakpoint-xl: 1280px; /* Desktop */
   --breakpoint-2xl: 1440px; /* Desktop XL */
 
-  /* ── Layout containers ──────────────────────────────────────────────── */
-  --container-*: initial;
+  /* ── Layout containers ──────────────────────────────────────────────────
+   * Page shell widths from design.md, plus Tailwind's standard width scale.
+   *
+   * The scale is kept deliberately: in v4 the `--container-*` namespace also
+   * backs every `max-w-sm`/`max-w-md`/`max-w-2xl` utility and the `@container`
+   * query variants. Clearing it silently removed those — a constrained element
+   * such as a modal or a prose column rendered full width with no error. These
+   * are neutral layout measurements, not brand tokens, so they are in scope.
+   */
   --container-page: 1400px; /* Maximum width */
   --container-content: 1320px; /* Content width */
 

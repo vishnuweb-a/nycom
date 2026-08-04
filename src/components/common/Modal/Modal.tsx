@@ -98,7 +98,7 @@ export const Modal = ({ open, onClose, title, footer, children }: ModalProps) =>
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="max-w-md relative flex w-full animate-rise-in flex-col gap-4 rounded-card bg-background p-6 shadow-modal"
+        className="relative flex w-full max-w-md animate-rise-in flex-col gap-4 rounded-card bg-background p-6 shadow-modal"
       >
         <h2 id={titleId} className="text-h5 text-heading md:text-h4">
           {title}

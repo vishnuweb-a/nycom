@@ -74,7 +74,7 @@ export const ToastProvider = ({ children }: ToastProviderProps) => {
             <div
               key={toast.id}
               className={cn(
-                'max-w-sm pointer-events-auto flex w-full items-center gap-3 rounded-card border-l-4 bg-white px-4 py-3 shadow-modal',
+                'pointer-events-auto flex w-full max-w-sm items-center gap-3 rounded-card border-l-4 bg-white px-4 py-3 shadow-modal',
                 TONE_STYLE[toast.tone],
               )}
             >

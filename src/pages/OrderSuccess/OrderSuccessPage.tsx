@@ -53,14 +53,14 @@ const OrderSuccessPage = () => {
 
           <h1 className="text-h3 md:text-h1">Order successfully placed</h1>
 
-          <p className="max-w-lg mx-auto text-lg text-secondary">
+          <p className="mx-auto max-w-lg text-lg text-secondary">
             We&apos;ve received your order and will send it on its way shortly. Keep the exact
             amount ready for the delivery partner.
           </p>
         </div>
       </div>
 
-      <dl className="max-w-2xl grid w-full gap-4 xs:grid-cols-2">
+      <dl className="grid w-full max-w-2xl gap-4 xs:grid-cols-2">
         {facts.map((fact) => {
           const Icon = fact.icon;
 
@@ -82,12 +82,12 @@ const OrderSuccessPage = () => {
         })}
       </dl>
 
-      <div className="max-w-md flex w-full flex-col items-center gap-2 rounded-card bg-surface p-4">
+      <div className="flex w-full max-w-md flex-col items-center gap-2 rounded-card bg-surface p-4">
         <span className="text-small text-secondary">Amount payable on delivery</span>
         <span className="text-h3 font-bold text-heading">{formatPrice(order.grandTotal)}</span>
       </div>
 
-      <div className="max-w-md flex w-full flex-col gap-3 xs:flex-row">
+      <div className="flex w-full max-w-md flex-col gap-3 xs:flex-row">
         <Link
           to={ROUTES.SHOP}
           className={buttonVariants({ variant: 'secondary', fullWidth: true })}

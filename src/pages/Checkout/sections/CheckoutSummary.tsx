@@ -12,6 +12,8 @@ export interface CheckoutSummaryProps {
   lines: readonly ReconciledLine[];
   summary: OrderSummary;
   itemCount: number;
+  /** True while the catalogue check is in flight. */
+  isValidating: boolean;
   isPlacing: boolean;
   onPlaceOrder: () => void;
 }
@@ -26,6 +28,7 @@ export const CheckoutSummary = ({
   lines,
   summary,
   itemCount,
+  isValidating,
   isPlacing,
   onPlaceOrder,
 }: CheckoutSummaryProps) => (
@@ -75,10 +78,12 @@ export const CheckoutSummary = ({
         <span>
           Subtotal ({itemCount} {itemCount === 1 ? 'item' : 'items'})
         </span>
-        <span className="font-medium text-text">{formatPrice(summary.subtotal)}</span>
+        <span className="font-medium text-text">
+          {isValidating ? '—' : formatPrice(summary.subtotal)}
+        </span>
       </div>
 
-      {summary.savings > 0 && (
+      {summary.savings > 0 && !isValidating && (
         <div className="flex justify-between text-base text-success">
           <span>Savings</span>
           <span className="font-medium">−{formatPrice(summary.savings)}</span>
@@ -88,7 +93,9 @@ export const CheckoutSummary = ({
       <div className="flex justify-between text-base text-body">
         <span>Shipping</span>
         <span className="font-medium">
-          {summary.shipping === 0 ? (
+          {isValidating ? (
+            '—'
+          ) : summary.shipping === 0 ? (
             <span className="text-success">Free</span>
           ) : (
             <span className="text-text">{formatPrice(summary.shipping)}</span>
@@ -106,7 +113,9 @@ export const CheckoutSummary = ({
 
     <div className="flex items-baseline justify-between">
       <span className="text-h5 text-heading">Grand total</span>
-      <span className="text-h4 font-bold text-heading">{formatPrice(summary.grandTotal)}</span>
+      <span className="text-h4 font-bold text-heading">
+        {isValidating ? '—' : formatPrice(summary.grandTotal)}
+      </span>
     </div>
 
     {/* Hidden on mobile, where the sticky bar carries the same action. */}

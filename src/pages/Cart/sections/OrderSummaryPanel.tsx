@@ -13,6 +13,8 @@ export interface OrderSummaryPanelProps {
   itemCount: number;
   /** False when nothing in the cart can actually be bought. */
   canCheckout: boolean;
+  /** True while the catalogue check is in flight. */
+  isValidating: boolean;
 }
 
 /**
@@ -22,8 +24,18 @@ export interface OrderSummaryPanelProps {
  * purchasable lines — an unavailable item must never inflate a total the
  * shopper is about to be asked to pay.
  */
-export const OrderSummaryPanel = ({ summary, itemCount, canCheckout }: OrderSummaryPanelProps) => {
+export const OrderSummaryPanel = ({
+  summary,
+  itemCount,
+  canCheckout,
+  isValidating,
+}: OrderSummaryPanelProps) => {
   const couponId = useId();
+
+  // Until the catalogue check resolves the totals are all zero. Rendering "₹0"
+  // would be a plausible-looking wrong number, which is worse than showing
+  // nothing at all, so money is masked while validating.
+  const money = (amount: number) => (isValidating ? '—' : formatPrice(amount));
 
   return (
     <div className="flex flex-col gap-6 rounded-card border border-border p-4 md:p-6">
@@ -34,20 +46,22 @@ export const OrderSummaryPanel = ({ summary, itemCount, canCheckout }: OrderSumm
           <span>
             Subtotal ({itemCount} {itemCount === 1 ? 'item' : 'items'})
           </span>
-          <span className="font-medium text-text">{formatPrice(summary.subtotal)}</span>
+          <span className="font-medium text-text">{money(summary.subtotal)}</span>
         </div>
 
-        {summary.savings > 0 && (
+        {summary.savings > 0 && !isValidating && (
           <div className="flex justify-between text-base text-success">
             <span>Savings</span>
-            <span className="font-medium">−{formatPrice(summary.savings)}</span>
+            <span className="font-medium">−{money(summary.savings)}</span>
           </div>
         )}
 
         <div className="flex justify-between text-base text-body">
           <span>Shipping</span>
           <span className="font-medium text-text">
-            {summary.shipping === 0 ? (
+            {isValidating ? (
+              '—'
+            ) : summary.shipping === 0 ? (
               <span className="text-success">Free</span>
             ) : (
               formatPrice(summary.shipping)
@@ -60,7 +74,7 @@ export const OrderSummaryPanel = ({ summary, itemCount, canCheckout }: OrderSumm
           <span className="text-right font-medium text-text">{estimatedDeliveryRange()}</span>
         </div>
 
-        {summary.freeShippingShortfall > 0 && (
+        {summary.freeShippingShortfall > 0 && !isValidating && (
           <p className="rounded-input bg-primary-light px-3 py-2 text-small text-primary">
             Add {formatPrice(summary.freeShippingShortfall)} more for free shipping.
           </p>
@@ -71,7 +85,7 @@ export const OrderSummaryPanel = ({ summary, itemCount, canCheckout }: OrderSumm
 
       <div className="flex items-baseline justify-between">
         <span className="text-h5 text-heading">Grand total</span>
-        <span className="text-h4 font-bold text-heading">{formatPrice(summary.grandTotal)}</span>
+        <span className="text-h4 font-bold text-heading">{money(summary.grandTotal)}</span>
       </div>
 
       {/* Coupon entry is presentation only — no engine exists, and pretending

@@ -829,3 +829,92 @@ success animation and the timeline are unobserved.
   so a real backend only needs to write a different status.
 - `lib/orderStorage.ts` is the single seam to replace when an order API arrives; `buildOrder` output
   is already shaped like a request body.
+
+---
+
+## 2026-08-05 — Browser verification and four bug fixes
+
+### Task
+
+Drove the full journey in a real browser — Home → Shop → Product → Add to Cart → Cart → Checkout →
+Confirm → Order Success → My Orders → Order Detail — at 1440×900 and 390×844, closing the "never
+seen on screen" gap carried by every feature entry since Product Details.
+
+19 scripted steps, each screenshotted and inspected. Four genuine bugs surfaced; all four are fixed
+and re-verified.
+
+### Bug 1 — Confirm Order threw the shopper off the success page (critical)
+
+`clearCart()` empties the cart, which re-renders `CheckoutPage`, and the empty-cart guard fired on
+that render and redirected to `/cart` — so a successful order landed the shopper back in an empty
+cart. The order was written correctly and the cart did clear; only the destination was wrong, which
+made it invisible to every non-browser check.
+
+The guard added to prevent a dead end was hijacking the successful path.
+
+**Fix:** a `placed` flag set at commit time; the guard is skipped once an order exists, because an
+empty cart is then the expected outcome rather than a dead end. `pages/Checkout/CheckoutPage.tsx`.
+
+### Bug 2 — `max-w-*` generated no CSS anywhere in the app (systemic)
+
+Phase 1 reset `--container-*: initial` to enforce token discipline. In Tailwind v4 that namespace
+also backs every `max-w-sm`/`max-w-md`/`max-w-2xl` utility and the `@container` variants, so all of
+them silently produced nothing. The confirmation modal rendered **1408px wide instead of 448px**,
+and constrained prose in Order Success, Newsletter, StatusMessage, Section, ProductInfo, Footer and
+the 404 page was unconstrained.
+
+Exactly the failure mode documented in Phase 1 — off-system utilities compile to nothing — landing
+on utilities that were never off-system.
+
+**Fix:** restored Tailwind's width scale alongside `--container-page`/`--container-content`. These
+are neutral layout measurements, not brand tokens. `styles/global.css`.
+
+### Bug 3 — Scroll never reset on navigation
+
+A data router does not reset scroll by default. Opening a product from 1200px down the Shop grid
+landed at 294px — mid-page, heading hidden under the sticky header. Affected every navigation.
+
+**Fix:** `<ScrollRestoration />` in `MainLayout`, which also honours the `preventScrollReset` the
+Shop listing uses when only its filters change. Verified: 1200 → 0.
+
+### Bug 4 — Trust badges collided in the checkout sidebar
+
+`TrustBadges` used `md:grid-cols-4`, keyed to the viewport, so inside the 330px checkout sidebar it
+forced four 62px columns and every label overflowed its icon.
+
+**Fix:** a container query — `@container` with `@xs:grid-cols-2 @2xl:grid-cols-4` — so it adapts to
+its container rather than the window. Measured after: single 298px column, zero overflow.
+
+### Also fixed — totals flashed ₹0 while validating
+
+Not a crash, but the cart and checkout summaries rendered `₹0` until the catalogue check resolved: a
+plausible-looking wrong number, which is worse than showing nothing. Money is now masked with an em
+dash while validating. `OrderSummaryPanel`, `CheckoutSummary`, `CheckoutPage`, `CartPage`.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean
+- All 19 browser steps pass, **zero console errors**, at both viewports
+- Confirmed in-browser: 38 products with real Cloudinary imagery; cart badge "2 items" then "empty"
+  after ordering; 8 validation errors on empty submit; modal `aria-modal="true"` with focus moved to
+  Cancel; order id generated; `yarnvia.cart.v1` is `[]` after ordering; mobile sticky purchase bar
+  visible; mobile filter drawer is a real dialog; empty cart redirects `/checkout` → `/cart`
+- Cloudinary transforms verified live in the page: `naturalWidth=768` from an
+  `f_auto,q_auto,dpr_auto,w_768,ar_4:5,c_fill,g_auto` URL
+
+### Notes
+
+Playwright was installed with `--no-save` for the run and `package.json` is untouched; the temporary
+driver directory was deleted. Nothing about the harness was committed.
+
+This run was worth more than the preceding static checks combined: three of the four bugs were
+invisible to type-checking, linting and the 29 logic assertions, because each involved render
+ordering, CSS generation or browser scroll behaviour rather than logic.
+
+### Future Notes
+
+- The verification driver was ad hoc. If browser checks become routine, capture the launch and drive
+  steps as a project skill via `/run-skill-generator` so the next run does not rediscover them.
+- Toasts persist across route changes, so a validation error raised on checkout can still be on
+  screen at Order Success if the transition is fast. Cosmetic; consider clearing toasts on
+  navigation.

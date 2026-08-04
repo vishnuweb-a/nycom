@@ -17,8 +17,12 @@ const BADGES = [
 ] as const;
 
 export const TrustBadges = () => (
-  <section aria-label="Our promises" className="rounded-card bg-surface p-4">
-    <ul className="grid grid-cols-2 gap-4 md:grid-cols-4">
+  // Container query, not a viewport breakpoint: this renders both full width
+  // under the cart items and inside a 330px checkout sidebar. Keyed to the
+  // viewport it forced four 62px columns into that sidebar and the labels
+  // collided with their icons.
+  <section aria-label="Our promises" className="@container rounded-card bg-surface p-4">
+    <ul className="grid grid-cols-1 gap-4 @xs:grid-cols-2 @2xl:grid-cols-4">
       {BADGES.map((badge) => {
         const Icon = badge.icon;
 

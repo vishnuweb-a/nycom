@@ -88,7 +88,7 @@ export const Newsletter = () => {
             onSubmit={(event) => {
               void handleSubmit(event);
             }}
-            className="max-w-lg flex w-full flex-col gap-3 xs:flex-row"
+            className="flex w-full max-w-lg flex-col gap-3 xs:flex-row"
           >
             <div className="flex-1 text-left">
               <label htmlFor={inputId} className="sr-only">

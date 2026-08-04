@@ -46,6 +46,14 @@ const CheckoutPage = () => {
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isPlacing, setIsPlacing] = useState(false);
+  /**
+   * Set the moment an order is committed.
+   *
+   * Placing an order empties the cart, which re-renders this page. Without this
+   * flag the empty-cart guard below would fire on that render and redirect to
+   * `/cart`, throwing the shopper off the success page they just earned.
+   */
+  const [placed, setPlaced] = useState(false);
 
   const {
     register,
@@ -107,6 +115,7 @@ const CheckoutPage = () => {
       const order = buildOrder(lines, summary, getValues());
 
       appendOrder(order);
+      setPlaced(true);
       clearCart();
       setConfirmOpen(false);
       setIsPlacing(false);
@@ -116,8 +125,9 @@ const CheckoutPage = () => {
   };
 
   // An empty cart has nothing to check out; send the shopper back rather than
-  // rendering a form that cannot be submitted.
-  if (items.length === 0) {
+  // rendering a form that cannot be submitted. Skipped once an order is placed,
+  // since clearing the cart is the expected outcome of success, not a dead end.
+  if (items.length === 0 && !placed) {
     return <Navigate to={ROUTES.CART} replace />;
   }
 
@@ -155,6 +165,7 @@ const CheckoutPage = () => {
               lines={lines}
               summary={summary}
               itemCount={itemCount}
+              isValidating={status === 'loading'}
               isPlacing={isPlacing}
               onPlaceOrder={() => {
                 void requestConfirmation();
@@ -170,7 +181,7 @@ const CheckoutPage = () => {
           <div className="flex flex-col">
             <span className="text-caption text-secondary">Total</span>
             <span className="text-h5 font-bold text-heading">
-              {formatPrice(summary.grandTotal)}
+              {status === 'loading' ? '—' : formatPrice(summary.grandTotal)}
             </span>
           </div>
 

@@ -186,6 +186,7 @@ const CartPage = () => {
             <OrderSummaryPanel
               summary={summary}
               itemCount={purchasableCount}
+              isValidating={status === 'loading'}
               canCheckout={canCheckout && status === 'success'}
             />
           </aside>
