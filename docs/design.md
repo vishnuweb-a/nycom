@@ -1265,3 +1265,52 @@ treatment. This is shared with the homepage rails.
 Bottom sheet at up to 85% viewport height, with a pinned footer holding Clear all and a "Show N
 results" dismiss. Focus moves into the sheet on open and returns to the trigger on close, Tab is
 trapped inside, Escape dismisses, and the page behind is locked from scrolling.
+
+---
+
+# Product Details — as built
+
+## Layout
+
+| Tier              | Arrangement                                                     |
+| ----------------- | --------------------------------------------------------------- |
+| Small Mobile      | Gallery, panel, delivery, details, specs, related; sticky bar    |
+| Mobile            | As above, actions side by side in the sticky bar                 |
+| Tablet            | Gallery and thumbnails side by side, panel below                 |
+| Laptop / Desktop  | Two columns — sticky gallery left, panel right                   |
+
+The gallery sticks at `top-32` on large screens so the imagery stays in view while the longer right
+column scrolls.
+
+## Mobile purchase bar
+
+Fixed to the bottom edge, hidden from tablet up, and it **covers the global mobile bottom
+navigation** on this route. Two stacked bars would consume roughly a third of a small viewport, and
+purchasing is the only task that matters on a product page. Page content carries bottom padding so
+nothing hides behind it.
+
+## Gallery
+
+Hero image with a thumbnail strip beside it on desktop and beneath on mobile. Thumbnails are a radio
+group, so arrow keys move between views and the selection is announced. The hero is keyed on the
+asset so the fade replays on each change.
+
+Zoom is architecturally prepared but not implemented: magnification needs only a larger Cloudinary
+derivative of the same active asset.
+
+## Size and quantity
+
+Sizes render as a radio group. Sold-out sizes remain visible, struck through and disabled. A product
+with a single buyable size auto-selects it. Quantity is a stepper bounded by the selected size's
+stock, with no free-text entry, so an invalid value cannot be produced.
+
+## Animation tokens
+
+`animate-fade-in` and `animate-rise-in` were added to the `@theme` block — 250ms `ease-in-out`,
+matching the Animations section above. Both are neutralised by the existing
+`prefers-reduced-motion` rule.
+
+## Toast
+
+Bottom-centre on mobile (clearing the purchase bar), bottom-right from tablet up. Auto-dismisses
+after 3.5 seconds, capped at three visible, each individually dismissible.

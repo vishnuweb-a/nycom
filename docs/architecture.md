@@ -1194,3 +1194,43 @@ write, so they cannot drift from `price` and `discount_price`.
 `getShopFacets` scans at most 1000 rows to derive its option lists. Adequate now; past a few thousand
 products this should become a materialised view or an RPC returning pre-aggregated counts rather
 than a larger scan.
+
+---
+
+# Implementation Notes — Product Details
+
+## Route
+
+The product route is `/product/:slug`, **not** `/product/:id`. The routing table earlier in this
+document said `:id`; every caller already passed a slug, so the parameter name was corrected rather
+than the behaviour. `productPath(slug)` builds it.
+
+## Services
+
+`services/productDetail.ts` is separate from `services/shop.ts` so the detail route chunk does not
+pull in the listing's facet machinery.
+
+- `getProductBySlug` returns `null` for an unmatched slug, letting the page render Not Found instead
+  of an error state.
+- `getRelatedProducts` fetches a bounded set of same-category candidates and ranks them in memory
+  (brand 4, material 2, collection 1), because PostgREST cannot order by that expression. When a
+  category holds too few products it tops up from the wider catalogue.
+
+## Purchase state
+
+`pages/Product/usePurchase.ts` owns selected size, quantity, validation and cart interaction. Both
+the purchase panel and the sticky mobile bar consume the same instance, so the two surfaces cannot
+disagree about what is being bought. It delegates every mutation to CartContext and maps the four
+`CartAddResult` values onto toast messages.
+
+## Toast
+
+`ToastProvider` sits above `CartProvider` in `App.tsx`. It is a polite live region so outcomes are
+announced without stealing focus. Introduced here because add-to-cart is the first action that
+changes state without navigating; Cart and Checkout are its next consumers.
+
+## Commerce constants
+
+`constants/commerce.ts` holds the delivery window, returns window, free-shipping threshold, shipping
+fee and GST note, so the figures quoted on the product page cannot drift from those on Cart and
+Checkout.

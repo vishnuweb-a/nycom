@@ -9,7 +9,7 @@ export const ROUTES = {
   HOME: '/',
   SHOP: '/shop',
   SHOP_CATEGORY: '/shop/:category',
-  PRODUCT: '/product/:id',
+  PRODUCT: '/product/:slug',
   CART: '/cart',
   CHECKOUT: '/checkout',
   ORDER_SUCCESS: '/order-success',
@@ -24,5 +24,5 @@ export type RoutePath = (typeof ROUTES)[keyof typeof ROUTES];
 export const shopCategoryPath = (categorySlug: string): string =>
   ROUTES.SHOP_CATEGORY.replace(':category', categorySlug);
 
-/** Builds `/product/classic-oxford-shirt` from the `/product/:id` pattern. */
-export const productPath = (productId: string): string => ROUTES.PRODUCT.replace(':id', productId);
+/** Builds `/product/classic-oxford-shirt` from the `/product/:slug` pattern. */
+export const productPath = (slug: string): string => ROUTES.PRODUCT.replace(':slug', slug);

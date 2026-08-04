@@ -155,6 +155,30 @@
   --ease-standard: ease-in-out;
   --default-transition-duration: 250ms;
   --default-transition-timing-function: ease-in-out;
+
+  /* design.md → Animations: fade and slide only, 250ms, ease-in-out. */
+  --animate-fade-in: fade-in 250ms ease-in-out;
+  --animate-rise-in: rise-in 250ms ease-in-out;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes rise-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
 /* ============================================================================

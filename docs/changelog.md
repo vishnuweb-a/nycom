@@ -543,3 +543,111 @@ far is the header badge. Worth exercising once the Cart page exists.
   state is always correct; only the advisory return value can be stale.
 - Stock in a cart line is a snapshot. A Cart page should re-check availability on mount rather than
   trusting a basket that may be days old.
+
+---
+
+## 2026-08-04 — Feature 3: Product Details
+
+### Feature
+
+The `/product/:slug` purchasing experience: image gallery, purchase panel, size and quantity
+selection, cart integration with full feedback, delivery assurances, specifications, related
+products, and a sticky mobile purchase bar.
+
+### Files Created
+
+**Data**
+
+- `services/productDetail.ts` — `getProductBySlug`, `getRelatedProducts`
+- `constants/commerce.ts` — delivery window, returns window, shipping threshold, GST note
+
+**Toast**
+
+- `context/toastContext.ts`, `context/ToastProvider.tsx`, `hooks/useToast.ts`
+
+**Components**
+
+- `components/product/ProductGallery/` — hero plus thumbnail radio group
+- `components/product/SizeSelector/` — radio group with disabled sold-out sizes
+- `components/product/QuantitySelector/` — stepper bounded by stock
+
+**Page**
+
+- `pages/Product/ProductPage.tsx`, `pages/Product/usePurchase.ts`
+- `pages/Product/sections/` — `PurchasePanel`, `ProductInfo`, `DeliveryInfo`, `RelatedProducts`,
+  `MobilePurchaseBar`, `ProductSkeleton`
+
+### Files Modified
+
+- `constants/routes.ts` — route param renamed `:id` → `:slug`
+- `App.tsx` — adds `ToastProvider`
+- `styles/global.css` — adds `fade-in` and `rise-in` keyframes as design tokens
+
+### Design Decisions
+
+**Route param renamed to `:slug`.** The pattern said `/product/:id` while every caller already passed
+a slug, so the name was simply wrong. `architecture.md` updated.
+
+**All purchase state lives in `usePurchase`.** The panel and the sticky mobile bar drive the same
+hook instance, so they cannot disagree about the selected size — duplicating the logic is exactly how
+a mobile bar ends up adding the wrong variant.
+
+**Every `addItem` return value is handled**: `added` → "Added to cart.", `increased` → "Quantity
+updated.", `clamped` → "Maximum available quantity reached.", `unavailable` → "Currently out of
+stock." No cart logic is reimplemented; CartContext remains the only mutator.
+
+**Single-size products auto-select.** Sarees carry only Free Size; demanding a click with one
+possible outcome is friction. Multi-size products require an explicit choice and show an inline
+error on attempted purchase.
+
+**Sold-out sizes stay visible but disabled**, struck through, rather than removed — what a product
+comes in is useful information even when unavailable.
+
+**Quantity is a stepper with no free-text input.** An invalid quantity is unreachable by
+construction rather than corrected after the fact.
+
+**The mobile purchase bar covers the global bottom navigation** on this route. Two stacked bars would
+consume a third of a small viewport; buying is the only job that matters here. This is what Myntra
+and AJIO do.
+
+**The description renders as a text node, never HTML.** Supabase holds plain text, so no sanitiser
+was added — it would be unused weight. If rich copy is introduced, sanitising becomes mandatory
+before that changes.
+
+**Zoom is prepared for, not built.** The hero is a single `<img>` derived from `activeImage`;
+magnification needs only a higher-resolution Cloudinary derivative of that same asset, with no change
+to selection or state. No unused zoom code was added.
+
+**Related products rank in memory.** PostgREST cannot order by "same brand, then same material", so
+one bounded query fetches same-category candidates and scores them (brand 4, material 2, collection
+1). Categories with too little stock top up from the wider catalogue — Men holds only four products,
+so that path is real, not hypothetical.
+
+**Page remounts on slug change** via a key, so gallery and purchase state never leak between products
+when navigating the related rail.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean
+- Verified against live data with the public anon key:
+  - `getProductBySlug` returns every panel field — brand, material, collection, season, occasion,
+    SKU, weight, ribbon, rating, reviews, variants, tags, meta title, Cloudinary image with alt text
+  - An unknown slug returns zero rows, so the Not Found page renders
+  - Related candidates: 21 in-category for a saree, 2 sharing brand or material; Men holds 4, so the
+    top-up path is exercised
+  - Multi-size data confirmed (5-6Y through 13-14Y) and one product has a genuinely sold-out size,
+    exercising the disabled-size path
+
+**Not verified:** rendering in a browser. Nothing here has been seen on screen — gallery transitions,
+toast placement, the sticky bar over the bottom nav, and keyboard flow through the radio groups are
+all reasoned, not observed.
+
+**No data for one path:** after the last re-seed no product is fully sold out, so the "Currently out
+of stock" panel cannot be exercised against real data.
+
+### Future Notes
+
+- Every product currently has exactly one image, so the thumbnail strip never renders. It is built
+  and will appear as soon as products carry multiple images.
+- Cart line stock is a snapshot taken when the item was added; the Cart page should re-verify
+  availability on mount.
