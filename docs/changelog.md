@@ -283,3 +283,76 @@ in the agreed feature order.
   idempotent and will upsert rather than duplicate.
 - `VITE_CLOUDINARY_UPLOAD_PRESET` is still empty. It is not needed for the seed script, which signs
   uploads server-side, but browser-side uploads will require it.
+
+---
+
+## 2026-08-04 — Catalogue seeded: children's denim added, Home now live on real data
+
+### Feature
+
+Applied the migration, generalised the catalogue parser to handle multiple garment types, and seeded
+the live catalogue. The Home feature is now rendering from real Supabase data with Cloudinary
+imagery — the outstanding manual step from the previous entry is closed.
+
+### Files Changed
+
+- `scripts/catalog.mjs` — rewritten around a `SOURCES` table so each folder maps to a category with
+  its own vocabulary (fabric, weave, fit) and size scale. Colour extraction now scans the whole
+  filename, not just the tail, because denim names place it mid-string
+  (`boys-navy-blue-solid-slim-fit`). Adds brand display overrides so `h-m` renders as `H&M`.
+- `scripts/seed.mjs` — uploads each photograph once and keys assets by file rather than by product,
+  so a cross-listed image is not uploaded twice. Sets covers for all three categories and builds one
+  hero slide per category.
+
+### Database Changes
+
+`0001_init.sql` applied. Seeded 38 products from 34 photographs:
+
+| Category | Products | Source                             |
+| -------- | -------- | ---------------------------------- |
+| Women    | 22       | `clothes/` — sarees                |
+| Children | 12       | `children/` — boys' jeans          |
+| Men      | 4        | cross-listed from `children/`      |
+
+Also seeded: 3 carousel slides (one per category), cover images on all three categories.
+
+### Cloudinary Changes
+
+34 images uploaded to `yarnvia/products/` with deterministic public IDs.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean
+- Verified with the **public anon key**, not the service role: 22 women / 12 children / 4 men
+  readable; 12 featured; 17 top selling; 3 carousel slides; all category covers present
+- RLS write probe with the anon key returned **401 Blocked**, confirming the public key cannot write
+- Cloudinary transformations verified live: the 245.7 kB JPEG original delivers as a 13.7 kB WebP at
+  card size and 4.0 kB at category-chip size — a 94% reduction
+
+### Notes
+
+**Men's category is placeholder data.** The project owner asked for some children's items to be used
+in Men. The `children/` folder is mixed: several images show a child model (H&M, Baesd, Dripteen)
+and the Stylecast piece has cartoon graphics and a toddler elastic waist. Those were excluded — a
+listing showing a child must not be sold as adult menswear.
+
+The four cross-listed items (United Colors of Benetton, both Urbano Juniors, Killer) are flat-lay
+denim shots with no person and no child-specific styling. For those rows the "boys" token is dropped
+from the title and copy, `gender` is `Men`, and variants use adult waist sizes 28–36 rather than
+child age sizes. They share a Cloudinary asset with their Children counterpart but are distinct
+product rows with their own slug and SKU.
+
+They remain boys' jeans underneath. **Replace them with genuine men's photography before this store
+takes real orders** — the waist sizing is not truthful to the garment.
+
+**Size filtering is now meaningful.** Children carry 5-6Y to 13-14Y and Men carry 28–36, so the Shop
+size facet has real values to work with. Sarees remain Free Size.
+
+**Still generated, not real:** prices, stock levels, ratings and review counts across all 38
+products.
+
+### Future Notes
+
+- Adding a category is now a `SOURCES` entry plus a folder; re-running `npm run seed` upserts.
+- When real men's photography arrives, remove `menEligible` from the children source and seed the
+  men's folder as its own `SOURCES` entry.

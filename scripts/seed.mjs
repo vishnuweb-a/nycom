@@ -2,19 +2,20 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { readCatalog, SOURCE_DIR } from './catalog.mjs';
+import { readCatalog } from './catalog.mjs';
 
 /**
- * Uploads the source photography to Cloudinary and seeds Supabase with the
- * derived catalogue.
+ * Uploads the source photography to Cloudinary and seeds Supabase.
  *
  * Run with:  npm run seed
  *
  * Idempotent. Cloudinary uploads use a deterministic `public_id` with
  * `overwrite`, and products upsert on `slug`, so re-running updates in place
- * rather than duplicating. Requires `supabase/migrations/0001_init.sql` to have
- * been applied first.
+ * rather than duplicating. Each photograph uploads once even when two product
+ * rows share it. Requires `supabase/migrations/0001_init.sql` to be applied.
  */
+
+const CLOUDINARY_FOLDER = 'yarnvia/products';
 
 const CLOUD = process.env.VITE_CLOUDINARY_CLOUD_NAME;
 const API_KEY = process.env.CLOUDINARY_API_KEY;
@@ -35,29 +36,33 @@ for (const [name, value] of Object.entries({
   }
 }
 
-const sign = (params) => {
-  const canonical = Object.keys(params)
-    .sort()
-    .map((key) => `${key}=${String(params[key])}`)
-    .join('&');
-
-  return createHash('sha1')
-    .update(canonical + API_SECRET)
-    .digest('hex');
+const supabaseHeaders = {
+  apikey: SERVICE_ROLE,
+  Authorization: `Bearer ${SERVICE_ROLE}`,
+  'Content-Type': 'application/json',
 };
 
+const sign = (params) =>
+  createHash('sha1')
+    .update(
+      Object.keys(params)
+        .sort()
+        .map((key) => `${key}=${String(params[key])}`)
+        .join('&') + API_SECRET,
+    )
+    .digest('hex');
+
 /** Uploads one file, overwriting any asset already at that public_id. */
-const uploadImage = async (filename, publicId) => {
+const uploadImage = async (dir, filename, publicId) => {
   const timestamp = Math.floor(Date.now() / 1000);
-  const params = { overwrite: 'true', public_id: publicId, timestamp };
 
   const form = new FormData();
-  form.append('file', new Blob([readFileSync(path.join(SOURCE_DIR, filename))]), filename);
+  form.append('file', new Blob([readFileSync(path.join(dir, filename))]), filename);
   form.append('api_key', API_KEY);
   form.append('timestamp', String(timestamp));
   form.append('public_id', publicId);
   form.append('overwrite', 'true');
-  form.append('signature', sign(params));
+  form.append('signature', sign({ overwrite: 'true', public_id: publicId, timestamp }));
 
   const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD}/image/upload`, {
     method: 'POST',
@@ -79,15 +84,13 @@ const uploadImage = async (filename, publicId) => {
 };
 
 /** Sends rows to PostgREST with the service role, which bypasses RLS. */
-const postRows = async (table, rows, { onConflict } = {}) => {
+const postRows = async (table, rows, onConflict) => {
   const query = onConflict === undefined ? '' : `?on_conflict=${onConflict}`;
 
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, {
     method: 'POST',
     headers: {
-      apikey: SERVICE_ROLE,
-      Authorization: `Bearer ${SERVICE_ROLE}`,
-      'Content-Type': 'application/json',
+      ...supabaseHeaders,
       Prefer:
         onConflict === undefined ? 'return=minimal' : 'resolution=merge-duplicates,return=minimal',
     },
@@ -101,24 +104,11 @@ const postRows = async (table, rows, { onConflict } = {}) => {
   }
 };
 
-const deleteAll = async (table) => {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=not.is.null`, {
-    method: 'DELETE',
-    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Supabase ${table} delete failed: ${await response.text()}`);
-  }
-};
-
 const main = async () => {
   const catalog = readCatalog();
-  console.log(`Parsed ${String(catalog.length)} products from ${SOURCE_DIR}/`);
 
-  // Fail fast with an actionable message if the migration has not been applied.
   const probe = await fetch(`${SUPABASE_URL}/rest/v1/products?select=slug&limit=1`, {
-    headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
+    headers: supabaseHeaders,
   });
 
   if (probe.status === 404) {
@@ -129,15 +119,33 @@ const main = async () => {
     process.exit(1);
   }
 
-  const rows = [];
+  // Upload each photograph once, even when several product rows reference it.
+  const unique = new Map();
 
-  for (const [index, product] of catalog.entries()) {
-    const image = await uploadImage(product.sourceFile, product.publicId);
-    const asset = { ...image, alt: product.title };
+  for (const product of catalog) {
+    if (!unique.has(product.fileKey)) {
+      unique.set(product.fileKey, { dir: product.sourceDir, file: product.sourceFile });
+    }
+  }
 
-    console.log(`  [${String(index + 1).padStart(2)}/${String(catalog.length)}] ${product.slug}`);
+  console.log(
+    `Parsed ${String(catalog.length)} products across ${String(unique.size)} photographs.`,
+  );
 
-    rows.push({
+  const assets = new Map();
+  let uploaded = 0;
+
+  for (const [fileKey, { dir, file }] of unique) {
+    const image = await uploadImage(dir, file, `${CLOUDINARY_FOLDER}/${fileKey}`);
+    assets.set(fileKey, image);
+    uploaded += 1;
+    console.log(`  [${String(uploaded).padStart(2)}/${String(unique.size)}] ${fileKey}`);
+  }
+
+  const rows = catalog.map((product) => {
+    const asset = { ...assets.get(product.fileKey), alt: product.title };
+
+    return {
       title: product.title,
       subtitle: product.subtitle,
       ribbon: product.ribbon,
@@ -173,62 +181,83 @@ const main = async () => {
       meta_title: product.metaTitle,
       meta_description: product.metaDescription,
       tags: product.tags,
-    });
-  }
+    };
+  });
 
-  await postRows('products', rows, { onConflict: 'slug' });
+  await postRows('products', rows, 'slug');
   console.log(`Upserted ${String(rows.length)} products.`);
 
-  // Hero slides reuse three catalogue photographs as right-aligned hero imagery.
-  const slideSources = [
+  // Category covers: the first product of each category supplies the imagery.
+  for (const slug of ['women', 'men', 'children']) {
+    const cover = rows.find((row) => row.category === slug)?.thumbnail;
+
+    if (cover === undefined) {
+      continue;
+    }
+
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/categories?slug=eq.${slug}`, {
+      method: 'PATCH',
+      headers: { ...supabaseHeaders, Prefer: 'return=minimal' },
+      body: JSON.stringify({ cover_image: cover }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Category cover update failed for ${slug}: ${await response.text()}`);
+    }
+  }
+  console.log('Updated category covers.');
+
+  // Hero slides, one per category so the banner reflects the whole catalogue.
+  const slideSpecs = [
     {
-      product: rows[1],
+      category: 'women',
       title: 'Festive Season Edit',
-      subtitle: 'Up to 60% off on designer sarees',
+      subtitle: 'Handwoven sarees, up to 60% off',
+      link: '/shop/women',
     },
     {
-      product: rows[8],
-      title: 'Handwoven Heritage',
-      subtitle: 'Banarasi and Kanjeevaram, made to last',
+      category: 'children',
+      title: 'Denim Built for Play',
+      subtitle: 'Tough, comfortable jeans for every adventure',
+      link: '/shop/children',
     },
     {
-      product: rows[14],
-      title: 'Everyday Elegance',
-      subtitle: 'Linen and cotton drapes for daily wear',
+      category: 'men',
+      title: 'Everyday Denim',
+      subtitle: 'Clean cuts and honest fabric',
+      link: '/shop/men',
     },
   ];
 
-  await deleteAll('carousel');
-  await postRows(
-    'carousel',
-    slideSources.map((slide, index) => ({
-      title: slide.title,
-      subtitle: slide.subtitle,
-      image: { ...slide.product.thumbnail, alt: slide.title },
-      button_text: 'Shop the edit',
-      button_link: '/shop/women',
-      display_order: index + 1,
-      active: true,
-    })),
-  );
-  console.log(`Inserted ${String(slideSources.length)} carousel slides.`);
+  const slides = slideSpecs
+    .map((spec, index) => {
+      const source = rows.find((row) => row.category === spec.category);
 
-  // Attach a category cover so the homepage category cards have real imagery.
-  const coverResponse = await fetch(`${SUPABASE_URL}/rest/v1/categories?slug=eq.women`, {
-    method: 'PATCH',
-    headers: {
-      apikey: SERVICE_ROLE,
-      Authorization: `Bearer ${SERVICE_ROLE}`,
-      'Content-Type': 'application/json',
-      Prefer: 'return=minimal',
-    },
-    body: JSON.stringify({ cover_image: rows[3].thumbnail }),
+      return source === undefined
+        ? null
+        : {
+            title: spec.title,
+            subtitle: spec.subtitle,
+            image: { ...source.thumbnail, alt: spec.title },
+            button_text: 'Shop the edit',
+            button_link: spec.link,
+            display_order: index + 1,
+            active: true,
+          };
+    })
+    .filter((slide) => slide !== null);
+
+  const purge = await fetch(`${SUPABASE_URL}/rest/v1/carousel?id=not.is.null`, {
+    method: 'DELETE',
+    headers: supabaseHeaders,
   });
 
-  if (!coverResponse.ok) {
-    throw new Error(`Category cover update failed: ${await coverResponse.text()}`);
+  if (!purge.ok) {
+    throw new Error(`Carousel purge failed: ${await purge.text()}`);
   }
 
+  await postRows('carousel', slides);
+  console.log(`Inserted ${String(slides.length)} carousel slides.`);
   console.log('Seed complete.');
 };
 
