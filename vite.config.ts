@@ -19,10 +19,19 @@ export default defineConfig({
       output: {
         // Keep the rarely-changing vendor core in its own long-cached chunk so
         // feature deploys don't invalidate it for returning shoppers.
-        manualChunks: (id) =>
-          /node_modules[\\/](react|react-dom|react-router|scheduler)[\\/]/.test(id)
-            ? 'react-vendor'
-            : undefined,
+        manualChunks: (id) => {
+          if (/node_modules[\\/](react|react-dom|react-router|scheduler)[\\/]/.test(id)) {
+            return 'react-vendor';
+          }
+
+          // Every data-backed route imports the Supabase client, so isolating it
+          // keeps it out of each route chunk and lets it cache across deploys.
+          if (/node_modules[\\/]@supabase[\\/]/.test(id)) {
+            return 'supabase-vendor';
+          }
+
+          return undefined;
+        },
       },
     },
   },

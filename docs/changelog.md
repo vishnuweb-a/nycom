@@ -187,3 +187,99 @@ Not verified: rendering in a browser, and behaviour at each breakpoint on a real
 Phase 3 — Reusable Components (Input, Textarea, Dropdown, Modal, Drawer, Accordion, Badge, Loader,
 Skeleton, Pagination, Product Card, Category Card, Rating Badge, Price, Quantity Selector, Empty
 State, Toast). `Button` is already delivered.
+
+---
+
+## 2026-08-04 — Feature 1: Home
+
+### Feature
+
+The complete landing page from `prd.md` §7 — hero carousel, shop by category, featured products, top
+selling, why shop with us, and newsletter signup — backed by Supabase and Cloudinary, with loading,
+empty and error states on every data-driven section.
+
+### Files Created
+
+**Database and seeding**
+
+- `supabase/migrations/0001_init.sql` — `products` (all 32 specified fields), `categories`,
+  `carousel`, `newsletter_subscribers`, `contact_queries`; indexes, an `updated_at` trigger, RLS
+  policies, and the three seed categories
+- `scripts/catalog.mjs` — derives structured products from the source photography filenames
+- `scripts/seed.mjs` — uploads to Cloudinary and upserts the catalogue into Supabase
+
+**Data layer**
+
+- `lib/supabase.ts`, `services/products.ts`, `services/categories.ts`, `services/carousel.ts`,
+  `services/newsletter.ts`
+- `types/product.ts`, `types/category.ts`, `types/carousel.ts`
+- `hooks/useAsyncData.ts`, `utils/cloudinary.ts`, `utils/format.ts`
+
+**Components**
+
+- `components/product/ProductCard/`, `components/product/ProductCardSkeleton/`
+- `components/cards/CategoryCard/`, `components/common/StatusMessage/`
+- `pages/Home/sections/` — `HeroCarousel`, `CategoryStrip`, `ProductShowcase`, `WhyYarnvia`,
+  `Newsletter`
+
+### Files Modified
+
+- `pages/Home/HomePage.tsx` — composes the sections
+- `vite.config.ts` — isolates the Supabase client into its own cached chunk
+
+### Summary
+
+The homepage renders entirely from Supabase. Each section fetches independently, so one failing
+query degrades a single rail rather than blanking the page. Images are served from Cloudinary with
+`f_auto,q_auto,dpr_auto` and a responsive `srcset`, so one stored 1080×1440 original serves the
+hero, the cards and the category chips without re-uploading.
+
+Catalogue data is derived from the 22 source filenames, which encode brand, colour, fabric and
+weave. Nothing about a product is invented except values no filename can carry — price, stock,
+rating and review count — which are derived deterministically from the slug so re-seeding produces
+identical data rather than drifting.
+
+### Validation
+
+- `npm run build` — passes, TypeScript strict clean. Home route chunk 23.95 kB gzip; Supabase
+  isolated at 53.38 kB gzip and shared across every future data route
+- `npm run lint` — zero errors, zero warnings
+- `npx prettier --check .` — clean
+- Catalogue parser dry-run: 22 products, 22 unique slugs, 22 unique SKUs, 7 featured, 9 top selling,
+  1 deliberately out of stock to exercise the sold-out treatment
+
+Not yet verified: the seeded homepage in a browser. The migration had not been applied at the time
+of writing, so no data has been inserted and no image has been uploaded.
+
+### Notes
+
+**One manual step outstanding.** `supabase/migrations/0001_init.sql` must be run in the Supabase SQL
+Editor before `npm run seed` will do anything — PostgREST cannot execute DDL and the project has no
+Postgres password on file. The seed script detects the missing table and exits with instructions
+rather than failing obscurely.
+
+**Catalogue is women's sarees only.** All 22 source images are sarees. Per the project owner, they
+seed under Women; Men and Children exist as real categories awaiting their photography and render
+honest empty states until then.
+
+**Sizes are "Free Size".** Sarees are not sized XS–XXL. The size filter in `prd.md` §8 will have
+little to work with until non-saree stock exists.
+
+**Derived commercial data.** Prices, stock levels, ratings and review counts are generated, not
+real. Ratings in particular are fabricated social proof and must be replaced with genuine review
+data before this store takes real orders.
+
+**Add to Cart is absent from the product card.** The card is a single link to the product page. The
+quick-add action belongs to the Cart feature, which owns the state it mutates; adding a button now
+would mean shipping a control that does nothing.
+
+**Contact form deferred.** `prd.md` §7 Section 8 places a contact form on the homepage. Its table
+(`contact_queries`) is already created, but the form ships with the Contact feature, which is last
+in the agreed feature order.
+
+### Future Notes
+
+- Re-run `npm run seed` after adding Men's and Children's photography to `clothes/`; the script is
+  idempotent and will upsert rather than duplicate.
+- `VITE_CLOUDINARY_UPLOAD_PRESET` is still empty. It is not needed for the seed script, which signs
+  uploads server-side, but browser-side uploads will require it.
