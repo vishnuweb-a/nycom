@@ -466,3 +466,80 @@ without it.
   pre-aggregated counts, rather than raising the limit.
 - Facet lists carry no result counts beside each option. Adding them needs per-facet aggregation,
   which is the same RPC change.
+
+---
+
+## 2026-08-04 — Cart context
+
+### Feature
+
+Guest cart state: a persisted, stock-aware cart with derived totals, plus the header badge that
+consumes it. Groundwork for the Cart feature; no Cart page yet.
+
+Also closes the migration-0002 verification owed from the Shop entry.
+
+### Files Created
+
+- `types/cart.ts` — `CartItem` (as specified), `CartTotals`, `CartAddResult`, `CartContextValue`
+- `utils/cart.ts` — pure calculations: `isSameLine`, `clampQuantity`, `calculateTotals`,
+  `toCartItem`
+- `lib/cartStorage.ts` — versioned, Zod-validated localStorage persistence
+- `context/cartContext.ts` — the context object
+- `context/CartProvider.tsx` — reducer, persistence and cross-tab sync
+- `hooks/useCart.ts` — consumer hook that throws outside the provider
+
+### Files Modified
+
+- `App.tsx` — wraps the router in `CartProvider`
+- `components/layout/Header/CartLink.tsx` — live item-count badge
+
+### Design Decisions
+
+**A cart line is identified by product *and* size.** The same product in two sizes is two lines;
+keying on product id alone would silently merge them.
+
+**Lines are flat snapshots, not product references.** The cart renders instantly on load with no
+network round trip, and survives a product being edited or deactivated between sessions. Re-adding
+an existing line refreshes the snapshot so price and stock changes are picked up. Prices must still
+be re-validated against the catalogue at checkout.
+
+**Every mutation clamps to available stock**, so no sequence of actions can produce a basket the
+warehouse cannot fulfil. `addItem` returns `added | increased | clamped | unavailable` so callers can
+report the real outcome instead of assuming success.
+
+**Persistence is versioned and validated.** The key is `yarnvia.cart.v1` and every read is parsed
+with Zod; data written by an older build is discarded rather than trusted, which would otherwise
+surface as `undefined` prices in the UI. All storage access is guarded — `localStorage` throws in
+Safari private mode.
+
+**Cross-tab sync** via the `storage` event, so two open windows never disagree about the basket.
+
+**Context object and provider live in separate files** so neither exports both a component and a
+non-component, which breaks React Fast Refresh. `architecture.md` lists a single
+`context/CartContext.tsx`; the split is `context/cartContext.ts` plus `context/CartProvider.tsx`.
+
+**Totals cover goods only** — `itemCount`, `lineCount`, `subtotal`, `total`, `savings`. GST,
+shipping and coupons are order-level concerns that belong to the Cart and Checkout features, not to
+cart state.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean
+- Migration 0002 confirmed applied, and the previously blocked queries verified against live data:
+  price ascending (₹919 → ₹929 → ₹939), price descending (₹7,219 top), highest discount (60%, 58%,
+  57%), highest rating (4.8, 4.8, 4.7), and the price-range filter (₹1,500–3,000 matches 10). The
+  Shop page is now fully functional.
+
+**Not verified:** the cart in a browser. The reducer, clamping and persistence have not been
+exercised at runtime — there is no automated test suite in the project, and the only UI consumer so
+far is the header badge. Worth exercising once the Cart page exists.
+
+### Future Notes
+
+- The cart is client-only. When authentication ships, `CartProvider` is where a merge-on-login
+  between the guest basket and a stored server cart would hook in.
+- Two `addItem` calls in the same tick both read the same render's `items`, so the second return
+  value may misreport `added` versus `increased`. The reducer is authoritative, so the resulting
+  state is always correct; only the advisory return value can be stale.
+- Stock in a cart line is a snapshot. A Cart page should re-check availability on mount rather than
+  trusting a basket that may be days old.

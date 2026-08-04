@@ -1,11 +1,16 @@
+import { CartProvider } from '@/context/CartProvider';
 import { AppRouter } from '@/router/AppRouter';
 
 /**
  * Application root.
  *
- * Global providers (CartContext, ThemeContext, AuthContext, Toast) wrap
- * `<AppRouter />` here as each is introduced.
+ * Global providers wrap `<AppRouter />` here. CartProvider sits outside the
+ * router so a basket survives navigation between routes.
  */
-const App = () => <AppRouter />;
+const App = () => (
+  <CartProvider>
+    <AppRouter />
+  </CartProvider>
+);
 
 export default App;
