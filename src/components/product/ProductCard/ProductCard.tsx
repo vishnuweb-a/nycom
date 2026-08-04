@@ -7,9 +7,12 @@ import {
   discountPercent,
   effectivePrice,
   isInStock,
+  LOW_STOCK_THRESHOLD,
+  totalStock,
   type Product,
 } from '@/types/product';
 import { cloudinarySrcSet, cloudinaryUrl } from '@/utils/cloudinary';
+import { cn } from '@/utils/cn';
 import { formatCount, formatPrice, formatRating } from '@/utils/format';
 
 export interface ProductCardProps {
@@ -37,6 +40,7 @@ export const ProductCard = ({ product, priority = false }: ProductCardProps) => 
   const discount = discountPercent(product);
   const sizes = availableSizes(product);
   const inStock = isInStock(product);
+  const remaining = totalStock(product);
 
   return (
     <article className="group relative h-full">
@@ -112,12 +116,25 @@ export const ProductCard = ({ product, priority = false }: ProductCardProps) => 
             </span>
           </div>
 
-          {sizes.length > 0 && (
-            <p className="mt-auto truncate text-caption text-secondary">
-              <span className="sr-only">Available sizes: </span>
-              {sizes.join(' · ')}
-            </p>
-          )}
+          <div className="mt-auto flex flex-col gap-1">
+            {sizes.length > 0 && (
+              <p className="truncate text-caption text-secondary">
+                <span className="sr-only">Available sizes: </span>
+                {sizes.join(' · ')}
+              </p>
+            )}
+
+            {inStock && (
+              <p
+                className={cn(
+                  'text-caption font-medium',
+                  remaining <= LOW_STOCK_THRESHOLD ? 'text-warning' : 'text-success',
+                )}
+              >
+                {remaining <= LOW_STOCK_THRESHOLD ? `Only ${String(remaining)} left` : 'In stock'}
+              </p>
+            )}
+          </div>
         </div>
       </Link>
     </article>

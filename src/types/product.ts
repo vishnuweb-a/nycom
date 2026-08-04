@@ -98,3 +98,10 @@ export const availableSizes = (product: Product): readonly string[] => [
 /** True when at least one variant can be purchased. */
 export const isInStock = (product: Product): boolean =>
   product.variants.some((variant) => variant.stock === 'in_stock' && variant.quantity > 0);
+
+/** Units available across every variant. */
+export const totalStock = (product: Product): number =>
+  product.variants.reduce((sum, variant) => sum + Math.max(0, variant.quantity), 0);
+
+/** Below this, the card nudges with an explicit count. */
+export const LOW_STOCK_THRESHOLD = 5;

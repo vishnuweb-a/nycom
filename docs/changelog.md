@@ -356,3 +356,113 @@ products.
 - Adding a category is now a `SOURCES` entry plus a folder; re-running `npm run seed` upserts.
 - When real men's photography arrives, remove `menEligible` from the children source and seed the
   men's folder as its own `SOURCES` entry.
+
+---
+
+## 2026-08-04 — Feature 2: Shop
+
+### Feature
+
+The full product discovery experience — page header with live count, debounced search, faceted
+filters (sticky sidebar on desktop, bottom drawer on mobile), five sort orders, a responsive grid,
+and pagination at 12 per page. All state lives in the URL.
+
+### Files Created
+
+**Data layer**
+
+- `services/shop.ts` — `getShopProducts` (one page plus an exact count) and `getShopFacets`
+  (available filter values). All filtering, sorting, counting and paging happens in Postgres.
+- `constants/shop.ts` — URL parameter names, page size, debounce, sort definitions, tag prefixes
+- `types/shop.ts` — `ShopFilters`, `ShopFacets`, `ShopResult`, `SortKey`
+- `hooks/useShopFilters.ts` — reads and writes the entire listing state through the query string
+- `hooks/useDebouncedValue.ts`
+
+**Components**
+
+- `components/filters/FilterSidebar/` — composes the facets and applies the hide-useless-filter rule
+- `components/filters/FilterGroup/` — accessible accordion section
+- `components/filters/CheckboxFacet/` — Brand and Material
+- `components/filters/PillFacet/` — Size and Colour, with swatches
+- `components/filters/PriceFacet/` — quick bands plus min/max inputs
+- `components/common/Drawer/` — mobile bottom sheet with focus trap and scroll lock
+- `components/common/Pagination/`
+- `pages/Shop/sections/` — `ShopSearch`, `ActiveFilters`, `ShopResults`
+
+**Database**
+
+- `supabase/migrations/0002_sortable_pricing.sql`
+
+### Files Modified
+
+- `pages/Shop/ShopPage.tsx` — composes the listing
+- `components/product/ProductCard/ProductCard.tsx` — adds the stock indicator required by the Shop
+  card spec ("In stock" / "Only N left"). This is a shared component, so the homepage rails show it
+  too; the change is additive and no existing element moved.
+- `types/product.ts` — adds `totalStock` and `LOW_STOCK_THRESHOLD`
+
+### Database Changes
+
+Migration `0002_sortable_pricing.sql` adds two **stored generated columns** and five indexes:
+
+- `effective_price` = `coalesce(discount_price, price)`
+- `discount_pct` = whole-number discount percentage
+
+PostgREST can only order by real columns, never by an expression. Without these, sorting by the
+price a shopper actually pays is impossible, and "Highest discount" cannot be expressed at all.
+Generated columns are maintained by Postgres on every write, so they cannot drift, and they are
+indexable. No existing column or row was altered.
+
+### Cloudinary Changes
+
+None. The grid reuses `ProductCard`, which already requests `f_auto,q_auto,dpr_auto` derivatives
+with a responsive `srcset`.
+
+### Design Decisions
+
+**All listing state lives in the URL.** Search, filters, sort and page are read from and written to
+the query string, so a result set is shareable and bookmarkable, the back button steps through
+refinements, and a reload restores exactly what the shopper had. Typing uses `replace` so the
+history stack does not gain an entry per keystroke.
+
+**Facets ignore their own selections.** The facet query applies category, search, price and
+availability but *not* brand/material/colour/size. Applying them would collapse each list to the
+chosen value and leave the shopper unable to change their mind.
+
+**Filters with fewer than two options are hidden**, and Availability appears only when the current
+selection genuinely contains both in- and out-of-stock items.
+
+**Price uses bands plus min/max inputs, not a slider.** A dual-thumb slider needs pointer precision
+that fails on touch and is awkward for keyboard and screen reader users. Typed inputs let a shopper
+enter an exact budget. Deliberate departure from design.md → Sidebar Filters → Price Slider.
+
+**A stable `id` tiebreaker is appended to every sort**, so paging can never repeat or drop a row when
+the sort column holds duplicate values.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean
+- Verified against live data with the **public anon key**:
+  - Category, brand (`in`), colour (`overlaps`), size (jsonb `contains` with `or`) and availability
+    filters all return correct counts
+  - Search matches across title, subtitle, brand, material and tags — "banarasi" 3, "jogger" 4,
+    "georgette" 6, nonsense term 0
+  - Exact counts and paging: 38 products across 4 pages, last page returns 2
+- Not verified in a browser: responsive layout at each breakpoint, drawer focus trap behaviour
+
+### Notes
+
+**Migration 0002 must be applied.** Until it is, the price filter, price sorting, discount sorting
+and the entire filter sidebar return HTTP 400, because their queries reference `effective_price`.
+The page degrades to its error state with a retry rather than crashing, but Shop is not usable
+without it.
+
+**Add to Cart is deliberately absent from the card**, as specified. It ships with the Cart feature.
+
+### Future Notes
+
+- `getShopFacets` scans up to 1000 rows to derive filter values. Fine for the current catalogue;
+  past a few thousand products this should become a materialised view or an RPC returning
+  pre-aggregated counts, rather than raising the limit.
+- Facet lists carry no result counts beside each option. Adding them needs per-facet aggregation,
+  which is the same RPC change.

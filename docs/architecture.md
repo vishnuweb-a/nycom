@@ -1148,3 +1148,49 @@ than omitting a control; each is added alongside its feature.
 
 The Footer renders its newsletter column only when a submit handler is supplied, so Phase 4
 completes it without restructuring.
+
+---
+
+# Implementation Notes — Shop listing
+
+## Listing state lives in the URL
+
+`hooks/useShopFilters.ts` is the single source of truth for search, filters, sort and page. It reads
+the query string and the `/shop/:category` route segment into a `ShopFilters` object and writes every
+change back. No listing state is held in component state.
+
+This makes a result set shareable and bookmarkable, keeps the back button meaningful, and means a
+reload restores exactly what the shopper was looking at. Search writes with `replace` so typing does
+not fill the history stack.
+
+Parameters: `q`, `brand`, `material`, `color`, `size`, `stock`, `min`, `max`, `sort`, `page`.
+Multi-select values are comma separated. Names live in `constants/shop.ts`.
+
+## Two queries per view
+
+`services/shop.ts` exposes:
+
+- `getShopProducts` — one page of rows plus an exact match count, with all filtering, sorting and
+  paging done in Postgres. Every sort appends a stable `id` tiebreaker so paging cannot repeat or
+  drop a row when the sort column holds duplicates.
+- `getShopFacets` — the available filter values for the current selection.
+
+The facet query deliberately applies category, search, price and availability but **not** the
+multi-select facets themselves. Applying them would collapse each list to the single chosen value,
+leaving the shopper unable to change their mind.
+
+`applyFilters` is shared by both and is generic over a small structural interface rather than
+Supabase's builder type, which exceeds TypeScript's instantiation depth when nested (TS2589). The
+builder is narrowed to `ShopQuery` at the two call sites.
+
+## Sortable pricing columns
+
+Migration `0002_sortable_pricing.sql` adds `effective_price` and `discount_pct` as stored generated
+columns, because PostgREST can only order by real columns. They are maintained by Postgres on every
+write, so they cannot drift from `price` and `discount_price`.
+
+## Facet scaling limit
+
+`getShopFacets` scans at most 1000 rows to derive its option lists. Adequate now; past a few thousand
+products this should become a materialised view or an RPC returning pre-aggregated counts rather
+than a larger scan.

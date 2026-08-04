@@ -1215,3 +1215,53 @@ interaction.
 Focus rings come from the global `:focus-visible` rule established in Phase 1, so no component
 declares its own. All hover transitions inherit the 250ms `ease-in-out` default and are neutralised
 under `prefers-reduced-motion: reduce`.
+
+---
+
+# Shop Listing — as built
+
+## Layout
+
+| Tier          | Filters                    | Grid      |
+| ------------- | -------------------------- | --------- |
+| Small Mobile  | Bottom drawer              | 1 column  |
+| Mobile        | Bottom drawer              | 2 columns |
+| Tablet        | Sticky 280px sidebar       | 3 columns |
+| Laptop        | Sticky 280px sidebar       | 3 columns |
+| Desktop XL    | Sticky 280px sidebar       | 4 columns |
+
+The sidebar sticks at `top-32`, clearing the 72px header plus the 52px category bar, and scrolls
+independently when the filter list is taller than the viewport.
+
+## Price filter — deviation from "Price Slider"
+
+This document specifies a price slider. The implementation uses four quick bands plus a Min/Max
+number pair instead.
+
+A dual-thumb slider needs pointer precision that is unreliable on touch, is awkward to operate with
+a keyboard, and announces poorly to screen readers. Typed inputs let a shopper enter an exact budget
+and are natively accessible. The bands cover the common case in one tap.
+
+## Filter visibility
+
+A facet with fewer than two options is not rendered — a lone checkbox that cannot change the result
+set is noise. Availability appears only when the current selection contains both in- and
+out-of-stock items.
+
+## Active filter chips
+
+Selected filters render as removable chips above the grid, with a Clear all action. Without them the
+only way to see what is narrowing a result set is to open the sidebar, which on mobile means opening
+the drawer.
+
+## Product card addition
+
+The card gained a stock indicator beneath the size list: "In stock" in success green, or "Only N
+left" in warning amber at five units or fewer. Out-of-stock products keep the existing overlay
+treatment. This is shared with the homepage rails.
+
+## Mobile filter drawer
+
+Bottom sheet at up to 85% viewport height, with a pinned footer holding Clear all and a "Show N
+results" dismiss. Focus moves into the sheet on open and returns to the trigger on close, Tab is
+trapped inside, Escape dismisses, and the page behind is locked from scrolling.
