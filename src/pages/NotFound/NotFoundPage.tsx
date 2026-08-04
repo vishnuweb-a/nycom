@@ -1,5 +1,7 @@
 import { Link } from 'react-router';
 
+import { buttonVariants } from '@/components/buttons/Button';
+import { Container } from '@/components/common/Container';
 import { ROUTES } from '@/constants/routes';
 
 /**
@@ -9,7 +11,7 @@ import { ROUTES } from '@/constants/routes';
  * product link becomes a shopping opportunity rather than a dead end.
  */
 const NotFoundPage = () => (
-  <div className="container-page flex flex-col items-center justify-center gap-6 py-24 text-center">
+  <Container className="flex flex-col items-center justify-center gap-6 py-24 text-center">
     <p className="text-h1 font-bold text-primary" aria-hidden="true">
       404
     </p>
@@ -22,21 +24,15 @@ const NotFoundPage = () => (
     </p>
 
     <div className="flex flex-col gap-3 xs:flex-row">
-      <Link
-        to={ROUTES.HOME}
-        className="flex h-control min-w-tap items-center justify-center rounded-button bg-primary px-6 text-button font-semibold text-white transition-colors hover:bg-primary-hover"
-      >
+      <Link to={ROUTES.HOME} className={buttonVariants()}>
         Back to home
       </Link>
 
-      <Link
-        to={ROUTES.SHOP}
-        className="flex h-control min-w-tap items-center justify-center rounded-button border border-primary px-6 text-button font-semibold text-primary transition-colors hover:bg-primary-light"
-      >
+      <Link to={ROUTES.SHOP} className={buttonVariants({ variant: 'secondary' })}>
         Continue shopping
       </Link>
     </div>
-  </div>
+  </Container>
 );
 
 export default NotFoundPage;

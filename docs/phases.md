@@ -571,3 +571,37 @@ Cloudinary
 Publicly accessible application.
 
 ---
+
+---
+
+# Phase Scope Amendments
+
+Recorded as phases complete, so this roadmap stays accurate.
+
+## Phase 0 / Phase 1 — delivered together
+
+CSS-first Tailwind v4 makes the token layer inseparable from build configuration; there is no
+meaningful "Tailwind configured" state that excludes the tokens.
+
+## Phase 2 — amended scope
+
+**Pulled forward from Phase 3:** `Button` (with `buttonVariants`). Header, Footer, the 404 page and
+the route error boundary all need it, and building Phase 2 without it would have duplicated button
+styling in five places.
+
+**Moved to Phase 4:** Newsletter and Query Form. Both were listed as Phase 2 components, but their
+data path — `services/` and the Supabase client — does not exist until Phase 10, and no
+`newsletter_subscribers` table appears in any schema. Building them in Phase 2 would have meant
+either a fake submit handler or a stub. They ship in Phase 4 alongside the Home and Contact pages
+that own their handlers, and are wired to Supabase in Phase 10.
+
+**Added:** `MobileBottomNav`, required by `design.md` → Mobile Behavior but absent from the Phase 2
+component list.
+
+**Deferred within Phase 3:** `Input`, `Textarea` and `IconButton` were built and then removed before
+commit — with the forms moved to Phase 4 they had no consumer, and shipping unused components
+violates the no-dead-code rule. They return in Phase 3 or Phase 4 with real consumers.
+
+## Phase 3 — reduced scope
+
+`Button` is already delivered. The remaining Phase 3 components are unchanged.

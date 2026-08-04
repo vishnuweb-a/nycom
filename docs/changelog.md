@@ -105,3 +105,85 @@ service layer exists yet).
 
 Phase 2 — Core Layout (Header, category navigation, search bar, footer, container/section wrappers,
 mobile bottom navigation).
+
+---
+
+## 2026-08-04 — Phase 2 (Core Layout)
+
+### Feature
+
+The application shell: header, category navigation, search, footer and mobile bottom navigation,
+composed into `MainLayout` so every route renders Header → Content → Footer.
+
+### Files Created
+
+**Components**
+
+- `components/buttons/Button/` — `Button.tsx`, `buttonVariants.ts`, `index.ts`
+- `components/common/Container/` — page gutters and the 1320px content column
+- `components/common/Section/` — titled page band, labelled as a landmark
+- `components/common/Logo/` — inline SVG wordmark with an inverted variant
+- `components/common/Breadcrumb/` — trail with the current crumb unlinked
+- `components/common/SearchBar/` — search form navigating to `/shop?q=`
+- `components/layout/Header/` — `Header.tsx`, `CartLink.tsx`
+- `components/layout/CategoryNav/` — 52px category bar
+- `components/layout/Footer/` — dark footer with link columns, social and copyright
+- `components/layout/MobileBottomNav/` — sticky bottom bar, hidden from tablet up
+
+**Constants and types**
+
+- `constants/categories.ts`, `constants/navigation.ts`, `constants/search.ts`
+- `types/navigation.ts`
+
+### Files Modified
+
+- `layouts/MainLayout/MainLayout.tsx` — composes the full chrome
+- `pages/NotFound/NotFoundPage.tsx` — now uses `Container` and `buttonVariants`
+- `router/RouteErrorBoundary.tsx` — now uses `Container`, `Button` and `buttonVariants`
+- `docs/architecture.md`, `docs/design.md`, `docs/phases.md` — synchronized
+
+### Summary
+
+Every page now carries the full application chrome, responsive across all five breakpoints. All
+navigation is table-driven from `constants/`; no route string or category name is inlined in a
+component. The button styling previously duplicated between the 404 page and the route error
+boundary is now a single primitive.
+
+### Notes
+
+**Scope amendments** — `Button` was pulled forward from Phase 3 because five call sites needed it.
+Newsletter and Query Form moved to Phase 4, where their handlers exist; they have no data path until
+Phase 10 and building them now would have required a stub. `MobileBottomNav` was added; it is
+required by `design.md` but was missing from the Phase 2 list.
+
+**Removed before commit** — `Input`, `Textarea` and `IconButton` were built, then deleted once the
+forms moved to Phase 4 left them without consumers. Unused components are dead code.
+
+**Deliberate omissions** — Wishlist, Account, the cart count badge and "Become Seller" are not
+rendered. No feature or route exists behind any of them; each ships with its feature. See the
+omissions table in `architecture.md`.
+
+**Social links render as text.** `lucide-react` 1.x removed all brand icons for trademark reasons.
+Hand-authoring brand SVG paths was rejected as unreliable. Brand marks need an approved icon
+dependency.
+
+**Open PRD gap.** `prd.md` §16 requires About, Privacy Policy, Terms, Refund Policy and FAQs in the
+footer, but §5 defines no routes for them and no phase builds them. They are omitted rather than
+linked to 404s. This needs a decision: add static content routes, or drop them from §16.
+
+### Validation Performed
+
+- `npm run build` — passes, TypeScript strict clean
+- `npm run lint` — zero errors, zero warnings
+- `npx prettier --check .` — clean
+- Grepped the emitted CSS to confirm all 14 design-token utilities used by the new chrome generate
+  real rules — `h-header`, `h-nav`, `size-tap`, `max-w-searchbar`, `bg-footer`, `bg-search`,
+  `text-caption`, `rounded-pill`, `h-control` and others
+
+Not verified: rendering in a browser, and behaviour at each breakpoint on a real device.
+
+### Next Recommended Phase
+
+Phase 3 — Reusable Components (Input, Textarea, Dropdown, Modal, Drawer, Accordion, Badge, Loader,
+Skeleton, Pagination, Product Card, Category Card, Rating Badge, Price, Quantity Selector, Empty
+State, Toast). `Button` is already delivered.

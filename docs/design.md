@@ -1154,3 +1154,64 @@ the PRD at every device it names and preserves the Small Mobile intent of this d
 Default transition duration is 250ms with `ease-in-out`, applied globally via
 `--default-transition-duration`. A `prefers-reduced-motion: reduce` block in the base layer
 neutralises animation, transition and smooth scrolling for users who request it.
+
+---
+
+# Layout Chrome — as built (Phase 2)
+
+## Header
+
+Sticky, `z-40`, white, 1px bottom border, as specified. The responsive behaviour is:
+
+| Tier                 | Layout                                                           |
+| -------------------- | ---------------------------------------------------------------- |
+| Small Mobile, Mobile | Logo + cart on row one, full-width search on row two; height auto |
+| Tablet               | Single 72px row: logo, search, cart                               |
+| Laptop and up        | Single 72px row: logo, primary nav, search, cart                  |
+
+The two-row mobile treatment implements "Search — Full Width" from Mobile Behavior. Header height is
+72px from Tablet up as specified; on mobile it is taller because it carries two rows.
+
+Wishlist, Account and "Become Seller" are not rendered — see the omissions table in
+`architecture.md`. Primary navigation (Home, Shop, My Orders) appears from Laptop up; below that,
+navigation is served by the category bar and the mobile bottom bar.
+
+## Category navigation
+
+52px tall, white, horizontally scrollable on narrow screens with the scrollbar hidden. The active
+item carries the purple bottom border; inactive items are body colour and turn purple on hover.
+Entries are Shop All, Men, Women, Children.
+
+## Footer
+
+Dark `#111827` background. Four columns at Laptop width, two at Tablet, one stacked on Mobile:
+brand and tagline, Shop, Your Account, Support. A bottom row holds social links and the copyright.
+
+Two deviations from this document:
+
+1. **Social links render as text, not brand glyphs.** `lucide-react` 1.x removed all brand icons for
+   trademark reasons, and this document names Lucide as the icon library. Hand-authoring brand SVG
+   paths was rejected. If brand marks are wanted, a dedicated icon dependency needs approval.
+2. **Policy links are omitted.** `prd.md` §16 lists About, Privacy Policy, Terms, Refund Policy and
+   FAQs, but `prd.md` §5 defines no routes for them and no phase builds them. They are omitted
+   rather than linked to 404s. This is an open PRD gap.
+
+## Mobile bottom navigation
+
+Sticky, hidden from Tablet up, with `env(safe-area-inset-bottom)` padding so it clears the home
+indicator on notched devices. Four destinations — Home, Shop, Orders, Cart. Wishlist and Account
+from Mobile Behavior are omitted until those features exist. The active item is purple and its icon
+renders at a heavier stroke.
+
+## Buttons
+
+`Button` implements the four specified variants — primary, secondary, ghost, danger — in two sizes,
+`sm` (44px) and `md` (48px). Both meet the 44px minimum clickable area; 48px matches the Buttons
+section above. A loading state swaps the label for a spinner, sets `aria-busy` and blocks
+interaction.
+
+## Focus and motion
+
+Focus rings come from the global `:focus-visible` rule established in Phase 1, so no component
+declares its own. All hover transitions inherit the 250ms `ease-in-out` default and are neutralised
+under `prefers-reduced-motion: reduce`.

@@ -1083,3 +1083,68 @@ shared delivery-SLA constant rather than stored per product.
 `vercel.json` pins the Vite framework preset, rewrites all paths to `index.html` for SPA routing,
 applies immutable caching to fingerprinted assets, and sets `X-Content-Type-Options`,
 `X-Frame-Options`, `Referrer-Policy` and `Permissions-Policy`.
+
+---
+
+# Implementation Notes — Phase 2 (Core Layout)
+
+## Component inventory
+
+Layer-based, matching the folder contract above. No feature folders were introduced.
+
+    components/
+      buttons/Button/         Button.tsx, buttonVariants.ts
+      common/Container/       Page gutter and 1320px content column
+      common/Section/         Titled page band, labelled landmark
+      common/Logo/            Inline SVG wordmark, inverted variant for the footer
+      common/Breadcrumb/      Hierarchical trail, current crumb unlinked
+      common/SearchBar/       Search form, navigates to /shop?q=
+      layout/Header/          Header.tsx, CartLink.tsx
+      layout/CategoryNav/     52px category bar
+      layout/Footer/          Dark footer, link columns, social, copyright
+      layout/MobileBottomNav/ Sticky bottom bar, hidden from tablet up
+
+`MainLayout` composes Header → CategoryNav → `<main>` → Footer → MobileBottomNav, so every route
+inherits the full chrome.
+
+## Style variants live beside their component
+
+`buttonVariants` is a separate module from `Button.tsx`. A file that exports both a component and a
+non-component breaks React Fast Refresh, and the linter enforces this. Any future component with CVA
+variants follows the same split.
+
+Navigation actions render `<Link className={buttonVariants(...)}>` rather than a `<Link>` wrapped in
+a `<button>`, which would be invalid HTML.
+
+## Search state lives in the URL
+
+The header search bar navigates to `/shop?q=<term>` rather than holding the term in component state.
+Results become shareable, bookmarkable and back-button-friendly, and the Shop page reads the same
+parameter in Phase 5. The parameter name is a constant in `constants/search.ts`; no literal `'q'`
+appears anywhere else.
+
+## New constants and types
+
+- `constants/categories.ts` — the three PRD categories and their route links
+- `constants/navigation.ts` — category bar, bottom bar, footer columns, social links
+- `constants/search.ts` — Shop query-parameter names
+- `types/navigation.ts` — `NavLink`, `IconNavLink`, `NavGroup`, `SocialLink`
+
+Every navigation destination is table-driven. No route string is inlined in a component.
+
+## Deliberate omissions
+
+These are absent because the feature or route behind them does not exist. Linking to a 404 is worse
+than omitting a control; each is added alongside its feature.
+
+| Omitted            | Specified in            | Added in                    |
+| ------------------ | ----------------------- | --------------------------- |
+| Wishlist action    | design.md, prd.md §15   | With the Wishlist feature   |
+| Account / Profile  | design.md, prd.md §6    | With Authentication         |
+| Cart count badge   | design.md               | Phase 7, with CartContext   |
+| Newsletter form    | phases.md Phase 2       | Phase 4, with its handler   |
+| Query form         | phases.md Phase 2       | Phase 4, with its page      |
+| Become Seller      | design.md               | No vendor feature in the PRD |
+
+The Footer renders its newsletter column only when a submit handler is supplied, so Phase 4
+completes it without restructuring.

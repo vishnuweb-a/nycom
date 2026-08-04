@@ -1,11 +1,15 @@
 import { Outlet } from 'react-router';
 
+import { CategoryNav } from '@/components/layout/CategoryNav';
+import { Footer } from '@/components/layout/Footer';
+import { Header } from '@/components/layout/Header';
+import { MobileBottomNav } from '@/components/layout/MobileBottomNav';
+
 /**
  * Application shell shared by every route.
  *
- * Header, category navigation, footer and the mobile bottom navigation are
- * added in Phase 2 (Core Layout); this file owns the landmark structure and the
- * skip link so keyboard users can bypass navigation on every page.
+ * Owns the landmark structure — header, main, footer — plus the skip link that
+ * lets keyboard users bypass navigation on every page.
  */
 export const MainLayout = () => (
   <div className="flex min-h-screen flex-col bg-background">
@@ -16,8 +20,14 @@ export const MainLayout = () => (
       Skip to main content
     </a>
 
+    <Header />
+    <CategoryNav />
+
     <main id="main-content" className="flex-1">
       <Outlet />
     </main>
+
+    <Footer />
+    <MobileBottomNav />
   </div>
 );
