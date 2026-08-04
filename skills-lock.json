@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "skills": {
+    "better-icons": {
+      "source": "better-auth/better-icons",
+      "sourceType": "github",
+      "skillPath": "skills/SKILL.md",
+      "computedHash": "b16a2f5830f3db40695fdd58d415a631e9fb6170a0cc5d3b56469d17e53596bc"
+    },
+    "frontend-design-ui-ux": {
+      "source": "ulpi-io/skills",
+      "sourceType": "github",
+      "skillPath": "frontend-design-ui-ux/SKILL.md",
+      "computedHash": "d98f5fb998ca3e06342a771c1955c207ede9b07ba84e1b5c95858f78ba59d17e"
+    },
+    "material-design-3-icons": {
+      "source": "shelbeely/shelbeely-agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/material-design-3-icons/SKILL.md",
+      "computedHash": "d169137e7e5a0d5168c9abcc982c206da6ce20e71d553ba7b74af850e9965c2d"
+    },
+    "react-expert": {
+      "source": "reactjs/react.dev",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/react-expert/SKILL.md",
+      "computedHash": "91dcdc833291c5f6583fd479325c848af3db21287579ef9b15cfb74f05409015"
+    },
+    "reactjs": {
+      "source": "jcchikikomori/skills-md",
+      "sourceType": "github",
+      "skillPath": "skills/reactjs/SKILL.md",
+      "computedHash": "1218f997bedb93b8ba4525c974eb1ba06c017b1736ef5bff3955ac784cc518c6"
+    },
+    "senior-frontend": {
+      "source": "nilecui/skillsbase",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/senior-frontend/SKILL.md",
+      "computedHash": "e0e83f80d3eb965b1e36acb8a336333a5db1152ddacdc07e19bd715187a6a455"
+    },
+    "tailwind-v4-best-practices": {
+      "source": "jenishshrestha/ai-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tailwind-v4-best-practices/SKILL.md",
+      "computedHash": "545793e3d815b5c966e7c1d4080c760fe560d7247344e55827d187bfe97ae730"
+    },
+    "tailwind-v4-configuration": {
+      "source": "flpbalada/fb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/tailwind-v4-configuration/SKILL.md",
+      "computedHash": "3dd0283b853fffae7adc180b1d974459335def0a74f59eca9318a2f37a4904c4"
+    },
+    "tailwindcss": {
+      "source": "pedronauck/skills",
+      "sourceType": "github",
+      "skillPath": "skills/mine/tailwindcss/SKILL.md",
+      "computedHash": "a43c6188274652f449901e9dc73ad486539c0ad24f159c278bb23f2f887f7dbc"
+    },
+    "tailwindcss-fundamentals-v4": {
+      "source": "josiahsiegel/claude-plugin-marketplace",
+      "sourceType": "github",
+      "skillPath": "plugins/tailwindcss-master/skills/tailwindcss-fundamentals-v4/SKILL.md",
+      "computedHash": "140c251f4c42c1e49d25d3bec274261b6681bf9e4b15b77abc0b6d67df77e05f"
+    },
+    "ui-ux-polish": {
+      "source": "dicklesworthstone/agent_flywheel_clawdbot_skills_and_integrations",
+      "sourceType": "github",
+      "skillPath": "skills/ui-ux-polish/SKILL.md",
+      "computedHash": "243d20bbeaf13d4770846bca8d411a34ea9db94149a28481c6b8d4058360f2f1"
+    },
+    "ui-ux-pro-max": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/ui-ux-pro-max/SKILL.md",
+      "computedHash": "6cb585d36a0d0418986bc8449bc0c8ff216344d692e08245d7f9e7414fee11a6"
+    },
+    "umbraco-icons": {
+      "source": "umbraco/umbraco-cms-backoffice-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/umbraco-backoffice-skills/skills/umbraco-icons/SKILL.md",
+      "computedHash": "b50f7692c959c860fc102c42b39e56cff7ceb5ff861f02b9ecd07724ba7034c2"
+    },
+    "web-styling-tailwind": {
+      "source": "agents-inc/skills",
+      "sourceType": "github",
+      "skillPath": "src/skills/web-styling-tailwind/SKILL.md",
+      "computedHash": "bca275a96fce6e125d52ebfa256f85780ef67b3d3b183c031513a1175c804833"
+    }
+  }
+}

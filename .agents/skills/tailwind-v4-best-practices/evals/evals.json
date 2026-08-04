@@ -1,0 +1,35 @@
+{
+  "skill_name": "tailwind-v4-best-practices",
+  "evals": [
+    {
+      "id": 1,
+      "name": "direct-color-violation",
+      "prompt": "I'm styling a button with bg-blue-500 text-white hover:bg-blue-600 and an error message with text-red-600. Is this correct for our project?",
+      "expected_output": "Should flag direct color usage and recommend semantic tokens: bg-primary, text-primary-foreground, hover:bg-primary-hover, text-error. Should explain why semantic tokens enable theming without changing components."
+    },
+    {
+      "id": 2,
+      "name": "dynamic-class-construction",
+      "prompt": "I have a component that sets className={`bg-${status}-500`} where status is 'green', 'red', or 'yellow'. It works in dev but some colors are missing in production. Why?",
+      "expected_output": "Should identify the dynamic class construction as the root cause — Tailwind can't detect partial class names at build time. Should recommend either a lookup object with complete class names, or CSS variables with semantic tokens like bg-status-success."
+    },
+    {
+      "id": 3,
+      "name": "theme-setup",
+      "prompt": "I'm setting up a new Tailwind v4 project. I still have a tailwind.config.js from v3 with custom colors defined as hex values. How do I migrate?",
+      "expected_output": "Should recommend moving config to @theme in CSS, converting hex to OKLCH, using @import 'tailwindcss' instead of @tailwind directives, and running npx @tailwindcss/upgrade. Should point to migration.md reference for the full checklist."
+    },
+    {
+      "id": 4,
+      "name": "design-token-architecture",
+      "prompt": "Our app has 50+ components and we keep having color inconsistencies. How should we organize our design tokens in Tailwind v4?",
+      "expected_output": "Should recommend the three-layer token architecture (Primitive → Semantic → Component). Should point to design-tokens.md reference. Should explain that components never reference primitives directly."
+    },
+    {
+      "id": 5,
+      "name": "apply-usage",
+      "prompt": "I'm using @apply px-4 py-2 bg-primary text-white rounded in a .button class. My coworker says this is wrong in v4. Is it?",
+      "expected_output": "Should explain that v4 discourages @apply. Recommend either using utility classes directly in templates, or using theme() function in CSS. Should show the theme() alternative."
+    }
+  ]
+}
