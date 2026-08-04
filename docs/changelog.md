@@ -726,3 +726,106 @@ reconciliation effect running against the real provider are unobserved.
   reconciliation preserves line order, which it does today.
 - When Checkout lands it should reuse `getCartProducts` + `reconcileCart` for a final pre-order
   check rather than trusting the cart page's validation from minutes earlier.
+
+---
+
+## 2026-08-04 — Features 5–7: Checkout, Order Success, My Orders
+
+### Feature
+
+The remaining purchase journey, entirely frontend: single-page checkout with a validated address
+form and Cash on Delivery, a celebratory order confirmation, order history, and an order detail view
+with a fulfilment timeline. No database writes, no APIs, no payment integration, no schema change.
+
+### Files Created
+
+**Domain and persistence**
+
+- `types/order.ts` — `Order`, `OrderItem`, `ShippingAddress`, status sequence and labels
+- `lib/orderStorage.ts` — versioned, Zod-validated localStorage (`yarnvia.orders.v1`)
+- `utils/order.ts` — `generateOrderId`, `buildOrder`, `formatOrderDate`
+
+**Shared components**
+
+- `components/forms/TextField/` — labelled input with error and hint wiring
+- `components/common/Modal/` — centred dialog with focus trap, Escape and scroll lock
+- `components/common/OrderStatusBadge/`
+
+**Checkout**
+
+- `pages/Checkout/CheckoutPage.tsx`, `addressSchema.ts`
+- `pages/Checkout/sections/` — `AddressForm`, `DeliveryCard`, `PaymentCard`, `CheckoutSummary`
+
+**Orders**
+
+- `pages/OrderSuccess/OrderSuccessPage.tsx`
+- `pages/Orders/OrdersPage.tsx`, `pages/Orders/sections/OrderCard.tsx`
+- `pages/OrderDetail/OrderDetailPage.tsx`, `sections/OrderTimeline.tsx`, `index.ts`
+
+### Files Modified
+
+- `constants/routes.ts` — adds `ORDER_DETAIL` and `orderDetailPath`
+- `router/AppRouter.tsx` — registers the lazy `/orders/:orderId` route
+
+### Architecture Note
+
+`/orders/:orderId` is a new route, needed because "View order" has to lead somewhere. Registered
+lazily like every other route; no other routing change.
+
+**This supersedes the plan stated at the end of the Cart entry**, which said placing an order would
+insert into the Supabase `orders` table. Orders are now frontend-only and persist to localStorage.
+The `orders` table remains in the schema, unused.
+
+### Design Decisions
+
+**Single page, not a wizard.** With one delivery method and one payment method there is nothing to
+branch on; four screens to confirm an address would add friction without clarity.
+
+**COD is presented as a confirmed selection, not a choice.** No radio button — with one method a
+radio implies alternatives that do not exist. No card, UPI, wallet, net banking, EMI or pay-later
+option appears anywhere in the codebase, and no payment details are collected.
+
+**Address validation is India-specific**: 10-digit mobile beginning 6–9, 6-digit PIN not starting
+zero. Every field carries the correct `autoComplete` token so a browser fills the whole address in
+one action. Validation is `onBlur`, so errors appear after leaving a field rather than while typing.
+
+**Checkout revalidates the cart** with the same `getCartProducts` + `reconcileCart` used by the cart
+page, so an order is never built from a price confirmed minutes earlier. Only purchasable lines
+reach the order.
+
+**Placement is simulated with a 900ms delay** and a loading state, so confirming reads as work
+happening rather than an instant jump. It builds the order, persists it, clears the cart, then
+navigates with `replace` so Back cannot return to a checkout whose cart is now empty.
+
+**An empty cart redirects to `/cart`** rather than rendering a form that cannot be submitted.
+Reaching Order Success with no order redirects home rather than showing a hollow celebration.
+
+**Order Detail offers no cancel or invoice control.** Both need a real order backend; a button that
+cannot do anything is worse than its absence. `prd.md` §13 lists them — they arrive with the backend.
+
+**Buy Again links to the product page** rather than re-adding to the cart, because sizes and stock
+have moved on since the order and those should be chosen against current data.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean; Checkout, Orders, OrderDetail and
+  OrderSuccess each emit their own lazy chunk
+- **Order logic executed, not just reasoned about**: 17 assertions against the real modules —
+  order-id format and near-uniqueness over 200 draws, `buildOrder` status/payment/field mapping,
+  exclusion of unpurchasable lines, verbatim totals, all seven address-schema rules (valid address,
+  optional landmark, bad phone prefix, short phone, zero-leading PIN, malformed email, short
+  address), storage round-trip, newest-first ordering, corrupt-data rejection, unknown-id lookup,
+  and date formatting. All pass.
+- Combined with the cart suite, 29 assertions now cover the money and order paths.
+
+**Not verified:** any of this in a browser. Layout, the modal focus trap, the sticky bars, the
+success animation and the timeline are unobserved.
+
+### Future Notes
+
+- Orders live only in the browser that placed them; clearing site data loses them. Expected for a
+  frontend MVP.
+- Order status is always `pending` — nothing advances it. The timeline already renders every state,
+  so a real backend only needs to write a different status.
+- `lib/orderStorage.ts` is the single seam to replace when an order API arrives; `buildOrder` output
+  is already shaped like a request body.

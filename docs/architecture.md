@@ -1234,3 +1234,13 @@ changes state without navigating; Cart and Checkout are its next consumers.
 `constants/commerce.ts` holds the delivery window, returns window, free-shipping threshold, shipping
 fee and GST note, so the figures quoted on the product page cannot drift from those on Cart and
 Checkout.
+
+# Route addition — order detail
+
+`/orders/:orderId` renders a single mock order, registered lazily in `AppRouter` like every other
+route. `orderDetailPath(orderId)` builds it.
+
+Orders are a frontend simulation: placed at checkout, persisted to `localStorage` under
+`yarnvia.orders.v1`, and read back by Order Success, My Orders and Order Detail. Nothing is written
+to Supabase — the `orders` table in the schema above remains unused. `lib/orderStorage.ts` is the
+single seam to replace when a real order API arrives.

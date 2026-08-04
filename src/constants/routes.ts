@@ -14,6 +14,7 @@ export const ROUTES = {
   CHECKOUT: '/checkout',
   ORDER_SUCCESS: '/order-success',
   ORDERS: '/orders',
+  ORDER_DETAIL: '/orders/:orderId',
   CONTACT: '/contact',
   NOT_FOUND: '*',
 } as const;
@@ -26,3 +27,7 @@ export const shopCategoryPath = (categorySlug: string): string =>
 
 /** Builds `/product/classic-oxford-shirt` from the `/product/:slug` pattern. */
 export const productPath = (slug: string): string => ROUTES.PRODUCT.replace(':slug', slug);
+
+/** Builds `/orders/YV-MB3K2-8FQ1` from the `/orders/:orderId` pattern. */
+export const orderDetailPath = (orderId: string): string =>
+  ROUTES.ORDER_DETAIL.replace(':orderId', orderId);
