@@ -651,3 +651,78 @@ of stock" panel cannot be exercised against real data.
   and will appear as soon as products carry multiple images.
 - Cart line stock is a snapshot taken when the item was added; the Cart page should re-verify
   availability on mount.
+
+---
+
+## 2026-08-04 — Feature 4: Shopping Cart
+
+### Feature
+
+The `/cart` review experience: revalidated line items, quantity editing, removal, order summary with
+shipping, a UI-only coupon field, trust badges, a sticky summary on desktop and a sticky checkout
+bar on mobile.
+
+### Files Created
+
+- `services/cartValidation.ts` — fetches the slim live rows behind the basket (half the payload of a
+  full product row)
+- `pages/Cart/sections/` — `CartLineItem`, `OrderSummaryPanel`, `EmptyCart`, `MobileCheckoutBar`
+- `components/common/TrustBadges/`
+
+### Files Modified
+
+- `utils/cart.ts` — adds `reconcileCart`, `calculateOrderSummary`, `hasCorrections`
+- `types/cart.ts` — adds `CartLineIssue`, `ReconciledLine`, `OrderSummary`; adds `replaceItems` to
+  the context contract
+- `context/CartProvider.tsx` — exposes `replaceItems` (the existing internal `replace` action; no
+  behavioural change to anything previously verified)
+- `utils/cloudinary.ts` — extracts `cloudinaryUrlFromSrc` so cart lines, which store a bare URL
+  rather than a full asset, get the same `f_auto,q_auto` treatment
+- `pages/Cart/CartPage.tsx` — the page
+
+### Design Decisions
+
+**Live catalogue always wins.** On load the basket's product ids are fetched and every line passes
+through `reconcileCart`, which re-derives title, brand, image, price and stock. Corrections are
+committed back through CartContext in one `replaceItems` update, then announced: price changes and
+quantity clamps each get an info toast, and per-line notices render inside the affected row.
+
+**Unpurchasable lines are kept, not deleted.** A vanished product, a dropped size or a sold-out size
+is flagged in-row with a removal affordance. Deleting someone's items silently is worse than showing
+them what changed. Such lines are excluded from every total and block the checkout CTA with an
+explanation.
+
+**Revalidation is keyed on product ids only**, so committing a corrected price does not retrigger
+the fetch and loop. A ref-held issue signature ensures each set of corrections is applied and
+announced once.
+
+**Removal needs no confirmation dialog.** The stakes are one click to re-add; a toast confirms the
+removal instead. The brief allowed judgement here ("only if appropriate").
+
+**Coupon field is honestly disabled** — input and button both, labelled "Coming soon", with a hint.
+No fake apply flow.
+
+**Shipping comes from `constants/commerce.ts`**: free at or above ₹999, else ₹79, with an "add ₹X
+more for free shipping" nudge computed from the same constants the product page quotes.
+
+### Validation
+
+- `npm run build`, `npm run lint`, `prettier --check` — all clean
+- **Reconciliation logic executed, not just reasoned about**: 12 assertions run against the real
+  `utils/cart.ts` covering the clean path, vanished product, dropped size, sold-out size, quantity
+  clamp (4 → 1 reported correctly), price drop adoption, discount removal falling back to full
+  price, unavailable lines excluded from totals, sub-threshold shipping, empty summary, and totals
+  arithmetic. All pass.
+- Live Supabase check with the anon key: the validation query returns slim rows (1,070 bytes vs
+  2,094 full) for known ids and zero rows for an unknown id, which reconciliation maps to
+  "unavailable".
+
+**Not verified:** the page in a browser — layout, sticky behaviour, toast timing and the
+reconciliation effect running against the real provider are unobserved.
+
+### Future Notes
+
+- The revalidation effect compares corrected lines to current items index-by-index; it assumes
+  reconciliation preserves line order, which it does today.
+- When Checkout lands it should reuse `getCartProducts` + `reconcileCart` for a final pre-order
+  check rather than trusting the cart page's validation from minutes earlier.

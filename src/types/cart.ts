@@ -51,6 +51,35 @@ export type CartAddResult =
   /** Nothing available in that size. */
   | 'unavailable';
 
+/** A discrepancy found between a cart line and the live catalogue. */
+export type CartLineIssue =
+  /** The product is gone or has been deactivated. */
+  | { readonly type: 'unavailable' }
+  /** The product exists but no longer comes in the chosen size. */
+  | { readonly type: 'size-unavailable' }
+  /** The size exists but has nothing left. */
+  | { readonly type: 'out-of-stock' }
+  | { readonly type: 'quantity-reduced'; readonly from: number; readonly to: number }
+  | { readonly type: 'price-changed'; readonly from: number; readonly to: number };
+
+/** One cart line after being checked against the live catalogue. */
+export interface ReconciledLine {
+  /** The line with live title, imagery, price and stock applied. */
+  readonly item: CartItem;
+  readonly issues: readonly CartLineIssue[];
+  /** False when the line cannot be purchased and must not reach checkout. */
+  readonly purchasable: boolean;
+}
+
+/** Order-level money, derived from the purchasable lines. */
+export interface OrderSummary {
+  readonly subtotal: number;
+  readonly savings: number;
+  readonly shipping: number;
+  readonly grandTotal: number;
+  readonly freeShippingShortfall: number;
+}
+
 export interface CartContextValue {
   readonly items: readonly CartItem[];
   readonly totals: CartTotals;
@@ -61,4 +90,12 @@ export interface CartContextValue {
   readonly clearCart: () => void;
   /** Units of a given product and size currently in the cart. */
   readonly quantityOf: (productId: string, selectedSize: string) => number;
+  /**
+   * Replaces every line at once.
+   *
+   * Used by the Cart page to commit the result of revalidating against the live
+   * catalogue — corrected prices and clamped quantities land in a single update
+   * rather than a burst of per-line writes.
+   */
+  readonly replaceItems: (items: readonly CartItem[]) => void;
 }

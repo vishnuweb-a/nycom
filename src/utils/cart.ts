@@ -1,4 +1,11 @@
-import type { CartItem, CartTotals } from '@/types/cart';
+import { FREE_SHIPPING_THRESHOLD, SHIPPING_FEE } from '@/constants/commerce';
+import type {
+  CartItem,
+  CartLineIssue,
+  CartTotals,
+  OrderSummary,
+  ReconciledLine,
+} from '@/types/cart';
 import { effectivePrice, type Product } from '@/types/product';
 
 /**
@@ -68,5 +75,97 @@ export const toCartItem = (
     unitPrice: product.price,
     discountPrice: effectivePrice(product),
     stock: variant.stock === 'in_stock' ? variant.quantity : 0,
+  };
+};
+
+/**
+ * Checks every cart line against the live catalogue.
+ *
+ * The catalogue always wins. A basket can be days old, so prices, stock, sizes
+ * and even whether a product still exists must be re-derived rather than
+ * trusted — otherwise a shopper reaches checkout holding a stale price.
+ *
+ * Lines that cannot be bought are kept rather than silently dropped, flagged so
+ * the shopper can see what changed and remove it themselves. Deleting items
+ * behind someone's back is worse than showing them the problem.
+ */
+export const reconcileCart = (
+  items: readonly CartItem[],
+  products: readonly Product[],
+): ReconciledLine[] =>
+  items.map((item) => {
+    const product = products.find((entry) => entry.id === item.productId);
+
+    if (product === undefined) {
+      return { item, issues: [{ type: 'unavailable' }], purchasable: false };
+    }
+
+    const variant = product.variants.find((entry) => entry.size === item.selectedSize);
+
+    // Refresh the presentational snapshot regardless of purchasability, so a
+    // renamed or re-shot product does not linger with stale copy.
+    const livePrice = effectivePrice(product);
+    const refreshed: CartItem = {
+      ...item,
+      slug: product.slug,
+      title: product.title,
+      brand: product.brand,
+      thumbnail: product.thumbnail?.secure_url ?? product.images[0]?.secure_url ?? item.thumbnail,
+      unitPrice: product.price,
+      discountPrice: livePrice,
+      stock: variant === undefined || variant.stock !== 'in_stock' ? 0 : variant.quantity,
+    };
+
+    const issues: CartLineIssue[] = [];
+
+    if (item.discountPrice !== livePrice) {
+      issues.push({ type: 'price-changed', from: item.discountPrice, to: livePrice });
+    }
+
+    if (variant === undefined) {
+      issues.push({ type: 'size-unavailable' });
+      return { item: refreshed, issues, purchasable: false };
+    }
+
+    if (refreshed.stock === 0) {
+      issues.push({ type: 'out-of-stock' });
+      return { item: refreshed, issues, purchasable: false };
+    }
+
+    if (item.quantity > refreshed.stock) {
+      issues.push({ type: 'quantity-reduced', from: item.quantity, to: refreshed.stock });
+
+      return {
+        item: { ...refreshed, quantity: refreshed.stock },
+        issues,
+        purchasable: true,
+      };
+    }
+
+    return { item: refreshed, issues, purchasable: true };
+  });
+
+/** True when reconciliation actually changed something worth committing. */
+export const hasCorrections = (lines: readonly ReconciledLine[]): boolean =>
+  lines.some((line) => line.issues.length > 0);
+
+/**
+ * Order-level money.
+ *
+ * Only purchasable lines contribute: an unavailable item must never inflate a
+ * total the shopper is about to be asked to pay.
+ */
+export const calculateOrderSummary = (lines: readonly ReconciledLine[]): OrderSummary => {
+  const payable = lines.filter((line) => line.purchasable).map((line) => line.item);
+  const { subtotal, total, savings } = calculateTotals(payable);
+
+  const shipping = total === 0 || total >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+
+  return {
+    subtotal,
+    savings,
+    shipping,
+    grandTotal: total + shipping,
+    freeShippingShortfall: Math.max(0, FREE_SHIPPING_THRESHOLD - total),
   };
 };

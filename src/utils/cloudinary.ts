@@ -40,18 +40,22 @@ const buildTransform = ({ width, aspectRatio, crop = 'fill' }: TransformOptions)
  * Falls back to the original URL when it is not a recognisable Cloudinary
  * upload path, so a manually entered image still renders.
  */
-export const cloudinaryUrl = (asset: CloudinaryAsset, options: TransformOptions): string => {
-  const index = asset.secure_url.indexOf(UPLOAD_SEGMENT);
+export const cloudinaryUrlFromSrc = (src: string, options: TransformOptions): string => {
+  const index = src.indexOf(UPLOAD_SEGMENT);
 
   if (index === -1) {
-    return asset.secure_url;
+    return src;
   }
 
-  const prefix = asset.secure_url.slice(0, index + UPLOAD_SEGMENT.length);
-  const suffix = asset.secure_url.slice(index + UPLOAD_SEGMENT.length);
+  const prefix = src.slice(0, index + UPLOAD_SEGMENT.length);
+  const suffix = src.slice(index + UPLOAD_SEGMENT.length);
 
   return `${prefix}${buildTransform(options)}/${suffix}`;
 };
+
+/** Asset-based overload, used everywhere a full `CloudinaryAsset` is on hand. */
+export const cloudinaryUrl = (asset: CloudinaryAsset, options: TransformOptions): string =>
+  cloudinaryUrlFromSrc(asset.secure_url, options);
 
 /**
  * Builds a `srcset` across the given widths so the browser picks the cheapest

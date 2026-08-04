@@ -151,6 +151,10 @@ export const CartProvider = ({ children }: CartProviderProps) => {
     dispatch({ type: 'clear' });
   }, []);
 
+  const replaceItems = useCallback((next: readonly CartItem[]) => {
+    dispatch({ type: 'replace', items: [...next] });
+  }, []);
+
   const quantityOf = useCallback(
     (productId: string, selectedSize: string) =>
       items.find((item) => isSameLine(item, productId, selectedSize))?.quantity ?? 0,
@@ -160,8 +164,17 @@ export const CartProvider = ({ children }: CartProviderProps) => {
   const totals = useMemo(() => calculateTotals(items), [items]);
 
   const value = useMemo<CartContextValue>(
-    () => ({ items, totals, addItem, updateQuantity, removeItem, clearCart, quantityOf }),
-    [items, totals, addItem, updateQuantity, removeItem, clearCart, quantityOf],
+    () => ({
+      items,
+      totals,
+      addItem,
+      updateQuantity,
+      removeItem,
+      clearCart,
+      quantityOf,
+      replaceItems,
+    }),
+    [items, totals, addItem, updateQuantity, removeItem, clearCart, quantityOf, replaceItems],
   );
 
   return <CartContext value={value}>{children}</CartContext>;
