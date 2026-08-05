@@ -918,3 +918,49 @@ ordering, CSS generation or browser scroll behaviour rather than logic.
 - Toasts persist across route changes, so a validation error raised on checkout can still be on
   screen at Order Success if the transition is fast. Cosmetic; consider clearing toasts on
   navigation.
+
+---
+
+## 2026-08-05 — Registered business identity
+
+### Change
+
+Adds the real company identity and surfaces it in the footer.
+
+### Files
+
+- **Created** `src/constants/company.ts` — legal name, email, phone (national + E.164),
+  registered address as structured fields plus pre-ordered lines
+- **Modified** `src/components/layout/Footer/Footer.tsx` — adds a "Get in touch" column with a
+  `mailto:` link, a `tel:` link and the registered office in an `<address>`; the copyright line now
+  names the legal entity instead of the brand
+
+### Old -> New
+
+| Location | Old | New |
+| --- | --- | --- |
+| Footer copyright | `(c) 2026 Yarnvia.` | `(c) 2026 YARNVIA EXPORTS PRIVATE LIMITED.` |
+| Footer contact | absent | email, phone and registered office added |
+
+### Deliberately not changed
+
+- `AddressForm` placeholders (`priya@example.com`, `9876543210`, `Bengaluru`, `560001`) and the
+  newsletter `you@example.com` — these are hints for the **customer to fill in their own** details.
+  Substituting company contact details there would be actively misleading.
+- Product brand names in `scripts/catalog.mjs` (Kalini, Anouk, H&M, Benetton) — third-party brands
+  of the goods, not this business.
+- `APP.name` stays `Yarnvia` — the trading brand shown in the header and title. The legal entity is
+  separate and lives in `COMPANY.legalName`.
+
+### Open for manual review
+
+- Social links point at bare `instagram.com` / `facebook.com` / `youtube.com`. Real profile URLs
+  needed.
+- `index.html` canonical is `https://yarnvia.vercel.app/`; correct it once the domain is known.
+- No Privacy, Terms, Shipping, Return, About or Contact page exists yet, and no invoice, email or
+  SMS template. Those surfaces will need `COMPANY` when built.
+
+### Validation
+
+`npm run build`, `npm run lint`, `prettier --check` clean. Footer rendered at 1440px and 390px with
+zero page errors; `mailto:yarnviaexports5869@gmail.com` and `tel:+918796432623` both verified.
