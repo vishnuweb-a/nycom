@@ -15,18 +15,19 @@ import { FOOTER_NAV_GROUPS, SOCIAL_LINKS } from '@/constants/navigation';
  * to state who is actually selling, and the footer is the conventional place.
  *
  * The newsletter column is added in Phase 4, when the Home page owns a submit
- * handler and Phase 10 supplies the service behind it. Policy pages (About,
- * Privacy, Terms, Refund, FAQs) are listed in prd.md §16 but have no routes
- * defined anywhere in the PRD, so they are not linked — a footer full of 404s
+ * handler and Phase 10 supplies the service behind it. The Legal column lists
+ * the policy pages from prd.md §16 that exist; the remaining ones (About,
+ * Privacy, Terms, FAQs) join it as they are built, since a footer full of 404s
  * is worse than a shorter footer.
  */
 export const Footer = () => (
   <footer className="mt-auto bg-footer text-light">
     <Container>
-      {/* Six tracks from Laptop up: brand, three nav groups, and a
+      {/* Seven tracks from Laptop up: brand, four nav groups, and a
           double-width contact column so the address and email do not wrap
-          mid-word. */}
-      <div className="grid gap-10 py-12 md:grid-cols-2 lg:grid-cols-6 lg:py-16">
+          mid-word. The horizontal gap tightens with the extra column so the
+          link columns keep a readable measure. */}
+      <div className="grid gap-x-8 gap-y-10 py-12 md:grid-cols-2 lg:grid-cols-7 lg:py-16">
         <div className="flex flex-col gap-4">
           <Logo inverted />
           <p className="max-w-xs text-base text-light">{APP.tagline}</p>

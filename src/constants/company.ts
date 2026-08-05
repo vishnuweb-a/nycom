@@ -14,6 +14,8 @@
 export const COMPANY = {
   /** Full registered name. Use on legal and financial surfaces. */
   legalName: 'YARNVIA EXPORTS PRIVATE LIMITED',
+  /** Registered storefront domain, as it is written in the legal copy. */
+  website: 'yarnvia.online',
   email: 'yarnviaexports5869@gmail.com',
   /** National format, as registered. */
   phone: '8796432623',

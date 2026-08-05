@@ -58,6 +58,18 @@ const router = createBrowserRouter([
         lazy: async () => ({ Component: (await import('@/pages/Contact')).default }),
       },
       {
+        path: ROUTES.PRIVACY,
+        lazy: async () => ({ Component: (await import('@/pages/Privacy')).default }),
+      },
+      {
+        path: ROUTES.TERMS,
+        lazy: async () => ({ Component: (await import('@/pages/Terms')).default }),
+      },
+      {
+        path: ROUTES.REFUND_POLICY,
+        lazy: async () => ({ Component: (await import('@/pages/RefundPolicy')).default }),
+      },
+      {
         path: ROUTES.NOT_FOUND,
         lazy: async () => ({ Component: (await import('@/pages/NotFound')).default }),
       },

@@ -1,46 +1,37 @@
-import type { InputHTMLAttributes, Ref } from 'react';
+import type { Ref, TextareaHTMLAttributes } from 'react';
 import { useId } from 'react';
 
 import { cn } from '@/utils/cn';
 
-export interface TextFieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'id'> {
+export interface TextAreaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'id'> {
   /** Visible label. Always rendered — a placeholder is not an accessible label. */
   label: string;
   /** Validation message. Its presence puts the field into the error state. */
   error?: string | undefined;
   /** Guidance shown below the field while it is valid. */
   hint?: string;
-  /** Marks the field optional in the label rather than starring every required one. */
+  /** Marks the field optional in the label. */
   optional?: boolean;
-  /**
-   * Renders the required asterisk beside the label. Off by default: forms where
-   * nearly every field is required mark the exceptions instead, which is quieter.
-   */
+  /** Renders the required asterisk beside the label. */
   requiredMark?: boolean;
-  /** Forwarded to the input by React Hook Form's `register`. */
-  ref?: Ref<HTMLInputElement>;
+  ref?: Ref<HTMLTextAreaElement>;
 }
 
 /**
- * Labelled text input with error and hint wiring.
- *
- * `aria-invalid` and `aria-describedby` are driven from `error`, so a screen
- * reader announces the failure with the field rather than leaving the message
- * orphaned somewhere below it.
- *
- * Most checkout fields are required, so the label marks the *optional* one
- * instead of decorating eight fields with asterisks.
+ * Multi-line counterpart to `TextField`, with the same label, hint and error
+ * wiring so a form can mix the two without a visual seam.
  */
-export const TextField = ({
+export const TextArea = ({
   label,
   error,
   hint,
   optional = false,
   requiredMark = false,
+  rows = 5,
   className,
   ref,
   ...props
-}: TextFieldProps) => {
+}: TextAreaProps) => {
   const fieldId = useId();
   const errorId = `${fieldId}-error`;
   const hintId = `${fieldId}-hint`;
@@ -57,13 +48,14 @@ export const TextField = ({
         {optional && <span className="ml-1 font-normal text-muted">(optional)</span>}
       </label>
 
-      <input
+      <textarea
         id={fieldId}
         ref={ref}
+        rows={rows}
         aria-invalid={error !== undefined}
         aria-describedby={error !== undefined ? errorId : hint !== undefined ? hintId : undefined}
         className={cn(
-          'h-control w-full rounded-input border bg-background px-4 text-base text-text',
+          'w-full resize-y rounded-input border bg-background px-4 py-3 text-base text-text',
           'placeholder:text-muted',
           'transition-colors focus:border-primary',
           error === undefined ? 'border-border hover:border-border-hover' : 'border-danger',

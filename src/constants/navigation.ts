@@ -40,6 +40,17 @@ export const FOOTER_NAV_GROUPS: readonly NavGroup[] = [
     title: 'Support',
     links: [{ label: 'Contact Us', path: ROUTES.CONTACT }],
   },
+  {
+    // Statutory disclosures. A Shipping Policy belongs in this group and is
+    // added to it when that page is built — linking it before it exists would
+    // only produce a 404.
+    title: 'Legal',
+    links: [
+      { label: 'Privacy Policy', path: ROUTES.PRIVACY },
+      { label: 'Terms & Conditions', path: ROUTES.TERMS },
+      { label: 'Refund & Cancellation Policy', path: ROUTES.REFUND_POLICY },
+    ],
+  },
 ];
 
 /** Social profiles — external, opened in a new tab. */

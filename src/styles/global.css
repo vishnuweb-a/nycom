@@ -269,6 +269,7 @@
     *::before,
     *::after {
       animation-duration: 0.01ms !important;
+      animation-delay: 0ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
@@ -293,6 +294,36 @@
   @media (width >= theme(--breakpoint-lg)) {
     padding-inline: --spacing(8); /* Desktop — 32px */
   }
+}
+
+/* Scroll-reveal entrance — the fade-and-slide from design.md → Animations.
+ *
+ * `both` holds the element on the animation's first frame, so it stays hidden
+ * through its stagger delay instead of flashing in and then animating. Applied
+ * by the `Reveal` component once the element scrolls into view; the reduced
+ * motion block above collapses both the duration and the delay to nothing. */
+@utility reveal {
+  animation: var(--animate-rise-in);
+  animation-fill-mode: both;
+}
+
+/* Stagger steps for a row or grid of revealed items. Discrete rather than
+ * computed: four steps cover every group on the page, and a longer cascade
+ * reads as a slow page rather than a polished one. */
+@utility reveal-delay-1 {
+  animation-delay: 80ms;
+}
+
+@utility reveal-delay-2 {
+  animation-delay: 160ms;
+}
+
+@utility reveal-delay-3 {
+  animation-delay: 240ms;
+}
+
+@utility reveal-delay-4 {
+  animation-delay: 320ms;
 }
 
 /* Clamp product titles to two lines — design.md → Product Card → Product Name. */

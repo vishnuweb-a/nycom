@@ -16,6 +16,9 @@ export const ROUTES = {
   ORDERS: '/orders',
   ORDER_DETAIL: '/orders/:orderId',
   CONTACT: '/contact',
+  PRIVACY: '/privacy-policy',
+  TERMS: '/terms-and-conditions',
+  REFUND_POLICY: '/refund-and-cancellation-policy',
   NOT_FOUND: '*',
 } as const;
 
