@@ -15,10 +15,9 @@ import { FOOTER_NAV_GROUPS, SOCIAL_LINKS } from '@/constants/navigation';
  * to state who is actually selling, and the footer is the conventional place.
  *
  * The newsletter column is added in Phase 4, when the Home page owns a submit
- * handler and Phase 10 supplies the service behind it. The Legal column lists
- * the policy pages from prd.md §16 that exist; the remaining ones (About,
- * Privacy, Terms, FAQs) join it as they are built, since a footer full of 404s
- * is worse than a shorter footer.
+ * handler and Phase 10 supplies the service behind it. The link columns carry
+ * the prd.md §16 destinations that exist; the remaining one (FAQs) joins them
+ * as it is built, since a footer full of 404s is worse than a shorter footer.
  */
 export const Footer = () => (
   <footer className="mt-auto bg-footer text-light">

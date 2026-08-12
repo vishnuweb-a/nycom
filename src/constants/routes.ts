@@ -15,6 +15,7 @@ export const ROUTES = {
   ORDER_SUCCESS: '/order-success',
   ORDERS: '/orders',
   ORDER_DETAIL: '/orders/:orderId',
+  ABOUT: '/about',
   CONTACT: '/contact',
   PRIVACY: '/privacy-policy',
   TERMS: '/terms-and-conditions',

@@ -37,8 +37,14 @@ export const FOOTER_NAV_GROUPS: readonly NavGroup[] = [
     ],
   },
   {
+    // "About Us" joins Support rather than opening a Company column of its own:
+    // the Laptop grid is sized for exactly four link groups beside the brand and
+    // contact columns, and a fifth would wrap the footer onto a second row.
     title: 'Support',
-    links: [{ label: 'Contact Us', path: ROUTES.CONTACT }],
+    links: [
+      { label: 'About Us', path: ROUTES.ABOUT },
+      { label: 'Contact Us', path: ROUTES.CONTACT },
+    ],
   },
   {
     // Statutory disclosures. A Shipping Policy belongs in this group and is
