@@ -22,6 +22,7 @@ export const PRIMARY_NAV = [
   { label: 'Home', path: ROUTES.HOME },
   { label: 'Shop', path: ROUTES.SHOP },
   { label: 'My Orders', path: ROUTES.ORDERS },
+  { label: 'About Us', path: ROUTES.ABOUT },
 ] as const;
 
 export type NavItem = (typeof PRIMARY_NAV)[number];
