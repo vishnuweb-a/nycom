@@ -51,28 +51,35 @@ Airpay hosted payment page (payments.airpay.co.in)
    │
    │  customer pays
    ▼
-   ├── IPN / success URL ──▶ configured PER-MID in the Airpay dashboard
-   │                         (currently believed to be the client's relay:
-   │                          frontiva.online ──▶ kkchat.in)
+   ├── IPN ─────────────▶ https://www.yarnvia.online/api/payments/callback
+   ├── Browser return ──▶ https://www.yarnvia.online/api/payments/return
+   │      (both resolved PER-MID from the Airpay dashboard)
    │
-   └── Yarnvia settles by PULLING the truth from Airpay:
+   └── Settlement always verifies by PULLING the truth from Airpay:
           Order Confirmation API, keyed by orderid, server-to-server
 ```
 
-**The most important property of this design:** Yarnvia does not depend on being
-notified. Airpay's Order Confirmation API is a *pull* interface keyed by
+**The most important property of this design:** settlement never depends on a
+single trigger. Airpay's Order Confirmation API is a *pull* interface keyed by
 `orderid`, a value Yarnvia generates and owns, so Yarnvia can always ask rather
-than wait. Three triggers drive the same settlement path:
+than wait. Three triggers drive the same verified settlement path:
 
 | Trigger | Endpoint | Fires when |
 | --- | --- | --- |
-| Push | `/api/payments/callback` | Airpay or the relay calls us — if ever configured |
+| IPN | `/api/payments/callback` | Airpay notifies us, server to server |
 | Pull | `/api/orders/:ref` | The shopper is on the success page |
 | Sweep | `/api/payments/reconcile` | Vercel Cron, daily (Hobby plan limit) |
 
-The sweep covers the case where nobody is present: the shopper paid and closed
-the tab, and no callback arrived. Without it, those orders would sit unsettled
-while the money sat in the merchant account.
+The sweep is defence in depth for an IPN that is missed, delayed or never
+delivered — the shopper paid and closed the tab, and no notification arrived.
+Without it those orders would sit unsettled while the money sat in the merchant
+account.
+
+> **`frontiva.online` and `kkchat.in` are NOT part of Yarnvia's payment
+> architecture.** Those URLs were supplied early in the project and were
+> initially mistaken for Yarnvia's callback chain. They belong to a **different,
+> existing integration**. Nothing in this codebase builds, calls, forwards to or
+> depends on them. Do not register them, and do not send anything to them.
 
 ---
 
@@ -341,41 +348,31 @@ Log into the Airpay merchant dashboard for this MID and record:
 
 Do not change anything yet. What you find determines everything below.
 
-### Step 2 — decide, based on what you found
+### Step 2 — register Yarnvia's own endpoints
 
-| If the Success/Return URL is… | Then… |
+Both destinations are resolved by Airpay **per-MID from its dashboard**. The
+Simple Transaction request carries no URL parameter of any kind, so Yarnvia
+cannot set them per transaction and no such parameter should be invented.
+
+| Setting | Value |
 | --- | --- |
-| Already a Yarnvia URL | Confirm it is exactly `https://www.yarnvia.online/api/payments/return` |
-| The client's relay (`frontiva.online/...`) | **The customer never returns to Yarnvia.** See below |
-| Empty / unset | Set it to `https://www.yarnvia.online/api/payments/return` |
+| Success / Return URL | `https://www.yarnvia.online/api/payments/return` |
+| IPN / Callback URL | `https://www.yarnvia.online/api/payments/callback` |
+| Registered domain | `www.yarnvia.online` |
 
-If it points at the relay, one of these must happen — it is the client's
-decision, not a code change:
+The `www` host is part of the origin and is matched literally. Register the
+canonical host, not the apex.
 
-1. **Repoint the return URL** to `https://www.yarnvia.online/api/payments/return`; or
-2. **Have the relay redirect the browser onward** to
-   `https://www.yarnvia.online/api/payments/return`, preserving the `orderid`; or
-3. **Accept that customers do not return to Yarnvia.** The payment still settles
-   correctly via the cron sweep, but the shopper sees no confirmation page. This
-   is a poor experience and not recommended.
-
-### Step 3 — the IPN / callback URL is optional
-
-`POST /api/payments/callback` is available at
-`https://www.yarnvia.online/api/payments/callback` if the client wants Yarnvia
-notified directly. It requires **no code change** to accept traffic and needs no
-shared secret to be safe, because it re-verifies everything through Order
-Confirmation and trusts nothing in the request body.
-
-If the client prefers to leave the IPN pointing at their existing relay, that is
-fine. The cron sweep covers it. **Do not remove or repoint the client's relay.**
+If any URL belonging to another integration is currently registered against this
+MID, it must be replaced with the two above — and that strongly suggests the MID
+is shared, which needs resolving first (see §18).
 
 ### What Yarnvia never does
 
-Yarnvia does not build, modify, proxy, or send anything to
-`frontiva.online/callback/cpm/arp/collection` or
-`kkchat.in/callback/cpm/arp/collection`. Those are the client's existing
-infrastructure. They appear in this codebase only in explanatory comments.
+Yarnvia does not build, modify, proxy, or send anything to any third-party
+callback relay. `frontiva.online` and `kkchat.in` belong to a **different,
+existing integration** and are not part of Yarnvia's payment architecture. They
+appear in this repository only in notices stating that they are excluded.
 
 ---
 
@@ -386,12 +383,14 @@ Three distinct concepts, deliberately not mixed:
 | # | Concept | Owner |
 | --- | --- | --- |
 | 1 | Airpay payment processing | Airpay |
-| 2 | Existing callback forwarding (`frontiva` → `kkchat`) | The client |
+| 2 | Airpay's IPN delivery to our registered endpoint | Airpay |
 | 3 | Yarnvia order/payment verification | Yarnvia |
 
-Yarnvia's endpoint serves as a **reconciliation and verification endpoint that
-is indifferent to its caller.** It works identically whether invoked by Airpay
-directly, by the client's relay, or never at all.
+Yarnvia's endpoint is its **own Airpay IPN destination**, registered against the
+MID and called by Airpay directly. It is deliberately indifferent to its caller,
+because the caller's claim is never what decides the outcome — and it works
+identically if the IPN never arrives at all, since the sweep and the success-page
+poll reach the same verified result.
 
 What happens to a callback that does arrive:
 

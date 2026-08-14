@@ -384,3 +384,77 @@ Stopping here as instructed. No code modified, no files created, no packages ins
 The three things I'd flag as most consequential: the localStorage-only order model is the sole blocking gap (§4); the callback domain ownership is unresolved and touches money integrity (§11); and the Order Confirmation sandbox limitation means the trusted verification path cannot be proven without a live MID (§15).
 
 Sources: Airpay Developer Docs, OAuth2, Simple Transaction, Encryption, Checksum, Order Confirmation, Webhooks & Order Confirmation PDF v1.5, reference plugin implementation.
+---
+
+# CORRECTION NOTE — appended after implementation
+
+**This document is the historical approved plan and has deliberately not been
+rewritten.** Sections 11 and 17 above reason at length about
+`frontiva.online/callback/cpm/arp/collection` and
+`kkchat.in/callback/cpm/arp/collection`, and treat the relationship between them
+and Yarnvia as an open question. That question has since been answered, and the
+answer changes the conclusion.
+
+## Those URLs are not part of Yarnvia's architecture
+
+They belong to a **different, existing integration**. They were supplied early in
+the project and were mistakenly carried into the Airpay planning as though they
+were Yarnvia's callback chain. They are not.
+
+Accordingly, the architecture described in §11 —
+
+    Airpay → frontiva.online → kkchat.in → (somehow) Yarnvia
+
+**is not, and never was, Yarnvia's payment flow.** Nothing in the delivered
+codebase builds, calls, forwards to, proxies through or depends on either
+domain, and no request has ever been sent to either.
+
+## What the final architecture is
+
+Yarnvia-native and self-contained, with Airpay as the only external party:
+
+    Yarnvia Checkout
+         ↓
+    POST /api/payments/create          server re-prices, inserts order, signs
+         ↓
+    Airpay Hosted Checkout
+         ↓
+    Customer completes payment
+         ↓
+    Airpay IPN  → /api/payments/callback        (server to server)
+    Airpay return → /api/payments/return        (browser)
+         ↓
+    Airpay Order Confirmation API      ← the sole proof of payment
+         ↓
+    Amount verified against orders.amount
+         ↓
+    Idempotent Supabase settlement
+         ↓
+    /order-success renders the verified status
+
+Both endpoints are Yarnvia's own and must be registered against Yarnvia's Airpay
+MID. Airpay resolves them per-MID from its dashboard; the Simple Transaction
+request carries no URL parameter, so they cannot be supplied per transaction.
+
+## What still holds from this plan
+
+Everything else. The server-side re-pricing, the refusal to trust a redirect or
+a callback body, Order Confirmation as the only authority, amount comparison
+against the server-derived figure, conditional-update idempotency, IST date
+handling, and the minimal one-table schema were all implemented as specified and
+verified against the live gateway.
+
+## Corrections to §8 and §17 established empirically
+
+The credential mapping in §8 was wrong in both directions. Verified against the
+live gateway:
+
+| Credential | Actual role |
+| --- | --- |
+| `AIRPAY_SECRET_KEY` | OAuth2 `client_secret` |
+| `AIRPAY_API_KEY` | the `secret` in the privatekey derivation |
+
+This resolves §17 Q3, and reverses the merchant-stated mapping recorded in §8.
+
+§17 Q1 (callback ownership) is answered by this note. §17 Q5 is answered: the
+return URL is dashboard-configured only, with no per-transaction override.

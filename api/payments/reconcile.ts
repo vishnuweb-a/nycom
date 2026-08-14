@@ -10,22 +10,25 @@ import { settleOrder } from '../_lib/settle.js';
 /**
  * Scheduled reconciliation — pulls the truth for orders nobody told us about.
  *
- * This exists because of a specific architectural fact about this deployment:
- * **Yarnvia cannot assume it will ever receive the Airpay IPN.** Airpay's
- * callback and success URLs are configured per-MID in its dashboard, and on this
- * MID they point at the client's existing infrastructure
- * (`frontiva.online` → `kkchat.in`). No mechanism has been established for that
- * chain to notify Yarnvia, and inventing one is out of scope.
+ * Defence in depth against an IPN that is missed, delayed, or never delivered.
  *
- * The good news is that Airpay's Order Confirmation API is a *pull* interface
- * keyed by `orderid`, which Yarnvia generates and owns. So Yarnvia never
- * actually needs to be told anything — it can always ask. Two things already
- * ask: the success page polling `/api/orders/:ref`, and the callback if one ever
- * arrives. Both require someone to be present.
+ * `/api/payments/callback` is Yarnvia's registered IPN endpoint and is expected
+ * to fire, but no webhook is guaranteed: deliveries are dropped, retried out of
+ * order, or held up by an outage on either side. An order whose notification
+ * never arrives must not be stranded at `initiated` while the money sits in the
+ * merchant account.
  *
- * This sweep covers the case where nobody is: the shopper paid and closed the
- * tab, and no callback reached us. Without it those orders would sit at
- * `initiated` forever while the money sat in the merchant account.
+ * What makes recovery possible is that Airpay's Order Confirmation API is a
+ * *pull* interface keyed by `orderid` — a value Yarnvia generates and owns — so
+ * settlement never actually depends on being told. It can always ask. Two paths
+ * already do: this sweep, and the success page polling `/api/orders/:ref`.
+ *
+ * The distinction that matters is presence. The polling path only runs while a
+ * shopper is sitting on the page; this sweep covers the case where nobody is,
+ * because they paid and closed the tab.
+ *
+ * All three routes converge on the same `settleOrder`, so a settlement reached
+ * here is verified exactly as strictly as one triggered by the IPN itself.
  *
  * It introduces no new infrastructure — a Vercel Cron entry in `vercel.json`
  * against the existing function runtime. No queue, no Redis, no worker.

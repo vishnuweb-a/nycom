@@ -1329,13 +1329,24 @@ hours every night and never during a daytime test. `istDate()` formats with
 `Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' })`, and the boundary
 is covered by tests.
 
-## Callback domains
+## Callback and return endpoints
 
-The two supplied URLs — `frontiva.online/callback/cpm/arp/collection` and
-`kkchat.in/callback/cpm/arp/collection` — are **not** used and nothing is sent to
-them. Neither domain is Yarnvia's. Yarnvia's own endpoint,
-`/api/payments/callback`, is what should be registered. See `payment.md` §11;
-the ownership question is still open and blocks callback registration.
+Both live on Yarnvia's own domain. The integration is self-contained: nothing
+relays, proxies or forwards on Yarnvia's behalf, and neither endpoint calls out
+to any third party.
+
+    IPN     POST https://www.yarnvia.online/api/payments/callback
+    Return  GET|POST https://www.yarnvia.online/api/payments/return
+
+Both must be registered against Yarnvia's Airpay MID, because Airpay resolves
+them per-MID from its dashboard rather than from anything in the request — see
+"Return URL is dashboard-configured" below.
+
+> **`frontiva.online` and `kkchat.in` are not part of this architecture.**
+> Those URLs were supplied early in the project and were initially assumed to be
+> Yarnvia's callback chain. They are not: they belong to a **different, existing
+> integration**. Nothing in this codebase builds, calls, forwards to, proxies
+> through or depends on them, and nothing ever should.
 
 ## Testing
 
@@ -1367,37 +1378,59 @@ detects and decrypts the envelope, and tolerates the plain shape, because the
 Decryption page ("all the API responses are encrypted") and the Order
 Confirmation page ("the response is not encrypted") contradict each other.
 
-## Callback architecture — with the client's existing relay
+## Payment architecture — final
 
-The client has confirmed that `frontiva.online/callback/cpm/arp/collection`
-forwards to `kkchat.in/callback/cpm/arp/collection`, and that this is their
-existing infrastructure. Yarnvia does not build, modify, or call it.
+Yarnvia-native end to end. Airpay is the only external party.
 
-The consequence that matters: **Airpay's callback and success URLs are configured
-per-MID, not per-transaction.** If they point at that relay, Airpay will never
-call `/api/payments/callback` and the shopper's browser will never reach
-`/api/payments/return`. Yarnvia therefore cannot depend on being notified.
+    Yarnvia Checkout
+         ↓
+    POST /api/payments/create        re-price from Supabase, insert order,
+         ↓                           OAuth, encrypt + checksum + privatekey
+    Airpay Hosted Checkout
+         ↓
+    Customer completes payment
+         ↓
+    ┌────────────────────────────┬──────────────────────────────┐
+    ↓ server-to-server           ↓ browser redirect
+    Airpay IPN                   Airpay return
+    → /api/payments/callback     → /api/payments/return
+         ↓                            ↓
+         └──────────┬─────────────────┘
+                    ↓
+    Airpay Order Confirmation API      ← the only proof of payment
+                    ↓
+    Amount checked against orders.amount
+                    ↓
+    Supabase order settlement (idempotent)
+                    ↓
+    /order-success renders the verified status
 
-It does not have to be. Order Confirmation is a *pull* API keyed by `orderid`,
-which Yarnvia generates and owns, so Yarnvia can always ask rather than wait.
-Three independent triggers now drive the same verification, and settlement is
-identical regardless of which fires:
+### Three routes, one verification
 
-    /api/payments/callback   if the relay is ever pointed here   (push)
-    /api/orders/:ref         shopper on the success page         (pull)
-    /api/payments/reconcile  Vercel Cron, every 15 minutes       (sweep)
+Settlement never depends on any single trigger. The IPN, the browser return and
+the scheduled sweep all converge on the same `settleOrder`, which re-verifies
+through Order Confirmation before touching an order:
 
-The sweep is what closes the gap where nobody is present — the shopper paid and
-closed the tab, and no callback arrived. Without it those orders would sit at
-`initiated` indefinitely while the money sat in the merchant account. It adds no
-infrastructure: a `crons` entry in `vercel.json` against the existing function
-runtime, authenticated with `CRON_SECRET`, batched and age-bounded.
+| Trigger | Endpoint | Fires when |
+| --- | --- | --- |
+| IPN | `/api/payments/callback` | Airpay notifies us, server to server |
+| Return + poll | `/api/payments/return` → `/api/orders/:ref` | the shopper comes back |
+| Sweep | `/api/payments/reconcile` | daily cron, for orders nobody reported |
 
-`/api/payments/callback` is retained unchanged. It is deliberately indifferent to
-its caller — Airpay directly, the client's relay, or anything else — because it
-re-verifies through Order Confirmation and trusts nothing in the request body.
-That property is why no shared secret is required for it to be safe, and why it
-works under any of the four possible roles without modification.
+A settlement reached by the sweep is verified exactly as strictly as one
+triggered by the IPN. This is why a missed or delayed webhook cannot strand a
+paid order, and why no relay or forwarding layer is needed anywhere.
+
+### Return URL is dashboard-configured
+
+Airpay's Simple Transaction request carries **no URL parameter of any kind** —
+not a return URL, not a callback URL, not a domain. The request payload is
+`orderid`, `amount`, `currency_code`, `iso_currency` and the four `buyer_*`
+fields, plus `merchant_id`, `encdata`, `checksum` and `privatekey`.
+
+Both destinations are therefore resolved by Airpay **per-MID from its
+dashboard**. Yarnvia cannot set or override them per transaction, and no such
+parameter should ever be invented. Registering them is an Airpay-side action.
 
 ### `requires_review`
 

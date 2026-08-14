@@ -6,7 +6,12 @@ import { log } from '../_lib/log.js';
 import { settleOrder } from '../_lib/settle.js';
 
 /**
- * POST /api/payments/callback — Airpay's server-to-server webhook.
+ * POST /api/payments/callback — Yarnvia's own Airpay IPN endpoint.
+ *
+ * This is the URL to register as the IPN/callback destination for Yarnvia's
+ * Airpay MID. Airpay posts here directly, server to server; nothing relays,
+ * proxies or forwards on Yarnvia's behalf, and this endpoint reaches out to
+ * nobody. The integration is self-contained.
  *
  * The path follows `docs/payment.md` §9 rather than the `/api/payments/airpay/…`
  * form sketched in the brief, since the plan is the approved specification and
@@ -15,22 +20,16 @@ import { settleOrder } from '../_lib/settle.js';
  * This endpoint is public, unauthenticated and reachable by anyone. It is
  * treated accordingly: the body is parsed as hostile input, and nothing in it
  * decides the outcome. Settlement runs entirely through `settleOrder`, which
- * re-verifies against Airpay before any order changes state.
+ * re-verifies against Airpay's Order Confirmation API before any order changes
+ * state. A callback is a prompt to go and check, never proof of payment.
  *
- * Deliberately indifferent to its caller. The client operates an existing
- * callback chain — `frontiva.online/callback/cpm/arp/collection` forwarding to
- * `kkchat.in/callback/cpm/arp/collection` — which Yarnvia does not build,
- * modify, or send anything to. This endpoint works identically whether it is
- * called by Airpay directly, by that relay, or not at all, because it derives
- * the outcome from Order Confirmation rather than from the request.
+ * That property is also why no shared secret is required for this to be safe:
+ * a forged request cannot produce a settlement it did not earn, because the
+ * claim in the request is never what decides the result.
  *
- * That property is also why it needs no shared secret to be safe: a forged
- * request cannot produce a settlement it did not earn. If the client later
- * wants the relay to notify Yarnvia, pointing it here is sufficient and
- * requires no change on this side.
- *
- * Yarnvia does not depend on this endpoint firing. See `payments/reconcile.ts`
- * for the sweep that settles orders nobody ever reports.
+ * Settlement does not depend on this endpoint firing at all. If an IPN is
+ * delayed, dropped or never configured, `payments/reconcile.ts` and the success
+ * page's polling reach the same verified outcome by a different route.
  *
  * Always answers 200. Airpay retries non-2xx responses, and a retry storm
  * against an endpoint that is working correctly — but reporting "I could not
