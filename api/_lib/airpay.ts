@@ -373,9 +373,25 @@ export const getAccessToken = async (): Promise<string> => {
 
   const payload = {
     client_id: env.AIRPAY_CLIENT_ID,
-    // Merchant-confirmed mapping: AIRPAY_API_KEY is the OAuth client secret.
-    // No separate AIRPAY_CLIENT_SECRET variable exists by design.
-    client_secret: env.AIRPAY_API_KEY,
+    /*
+     * AIRPAY_SECRET_KEY — established empirically against the live gateway.
+     *
+     * The merchant stated that AIRPAY_API_KEY was the OAuth client secret, and
+     * this originally used it. Airpay rejected every such request with
+     * `data.success: false, data.msg: "Invalid client id or secret"`, while the
+     * identical request carrying AIRPAY_SECRET_KEY returned a token. The same
+     * result held across url-encoded and multipart bodies and both URL forms,
+     * so the credential is the only variable that mattered.
+     *
+     * A live gateway saying yes to one value and no to the other is stronger
+     * evidence than either the documentation or the merchant's recollection,
+     * which is why the stated mapping is overridden here.
+     *
+     * Note this means AIRPAY_SECRET_KEY serves two roles: the OAuth secret and
+     * the `secret` in the privatekey derivation. AIRPAY_API_KEY is consequently
+     * unused by this integration — see the note in `env.ts`.
+     */
+    client_secret: env.AIRPAY_SECRET_KEY,
     merchant_id: env.AIRPAY_MID,
     grant_type: 'client_credentials',
   } as const;

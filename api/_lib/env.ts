@@ -19,9 +19,21 @@ const serverEnvSchema = z.object({
 
   AIRPAY_MID: z.string().min(1, 'AIRPAY_MID is required'),
   AIRPAY_CLIENT_ID: z.string().min(1, 'AIRPAY_CLIENT_ID is required'),
-  /** OAuth2 `client_secret` — merchant-confirmed mapping. */
+  /**
+   * Currently unused.
+   *
+   * The merchant identified this as the OAuth2 `client_secret`, but the live
+   * gateway rejects it — "Invalid client id or secret" — and accepts
+   * AIRPAY_SECRET_KEY instead. It is kept required rather than removed because
+   * it is an issued credential that may belong to another Airpay product, and
+   * dropping it would lose the value. Worth confirming with Airpay what it is
+   * for.
+   */
   AIRPAY_API_KEY: z.string().min(1, 'AIRPAY_API_KEY is required'),
-  /** The `secret` in the privatekey derivation. */
+  /**
+   * Serves two roles, both confirmed against the live gateway: the OAuth2
+   * `client_secret`, and the `secret` in the privatekey derivation.
+   */
   AIRPAY_SECRET_KEY: z.string().min(1, 'AIRPAY_SECRET_KEY is required'),
   AIRPAY_USERNAME: z.string().min(1, 'AIRPAY_USERNAME is required'),
   AIRPAY_PASSWORD: z.string().min(1, 'AIRPAY_PASSWORD is required'),

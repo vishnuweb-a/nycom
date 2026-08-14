@@ -90,8 +90,8 @@ Never `VITE_`-prefixed. Vite cannot bundle these, by design.
 | --- | --- | --- | --- | --- | --- |
 | `AIRPAY_MID` | Yes | Server | Airpay | Merchant ID; sent as `merchant_id`, and part of `ap_SecureHash` | Sensitive |
 | `AIRPAY_CLIENT_ID` | Yes | Server | Airpay | OAuth2 `client_id` | Sensitive |
-| `AIRPAY_API_KEY` | Yes | Server | Airpay | OAuth2 `client_secret` — see §5 | **Secret** |
-| `AIRPAY_SECRET_KEY` | Yes | Server | Airpay | The `secret` in the privatekey derivation | **Secret** |
+| `AIRPAY_API_KEY` | Yes | Server | Airpay | Currently unused — see §5 | **Secret** |
+| `AIRPAY_SECRET_KEY` | Yes | Server | Airpay | OAuth2 `client_secret` **and** the privatekey `secret` — see §5 | **Secret** |
 | `AIRPAY_USERNAME` | Yes | Server | Airpay | Part of privatekey, AES key and `ap_SecureHash` | **Secret** |
 | `AIRPAY_PASSWORD` | Yes | Server | Airpay | Part of privatekey and AES key | **Secret** |
 | `AIRPAY_ENV` | Yes | Server | You (`live`) | Gates Order Confirmation. Must be `live` or `sandbox` | No |
@@ -162,24 +162,38 @@ this repository.
 
 ## 5. Credential Mapping
 
-> **Deployment note — merchant-confirmed mapping.**
+> ### ⚠ Deployment note — the stated mapping was wrong
 >
-> **`AIRPAY_API_KEY` is used as the OAuth2 `client_secret`.**
+> **`AIRPAY_SECRET_KEY` is the OAuth2 `client_secret`, not `AIRPAY_API_KEY`.**
 >
-> The client explicitly confirmed this. Airpay's OAuth2 documentation names the
-> field `client_secret` but does not state which issued credential supplies it,
-> so this mapping comes from the merchant, not from the docs.
+> The merchant identified `AIRPAY_API_KEY` as the OAuth secret and this
+> integration originally used it. The live gateway rejected every such request:
 >
-> **There is deliberately no `AIRPAY_CLIENT_SECRET` variable.** Do not add one.
-> The codebase does not read it, and introducing it would create two names for
-> one value.
+> ```
+> {"data":{"success":false,"msg":"Invalid client id or secret"}}
+> ```
+>
+> The identical request carrying `AIRPAY_SECRET_KEY` returned a token. The
+> result held across url-encoded and multipart bodies and both URL forms, so the
+> credential was the only variable that mattered.
+>
+> Note the trap in that response: the outer envelope still reads
+> `status_code 200, response_code "00", status "success", message "Success"`.
+> Those describe the transport, not the outcome. The verdict is `data.success`.
+>
+> **`AIRPAY_SECRET_KEY` therefore serves two roles** — the OAuth secret and the
+> `secret` in the privatekey derivation — and **`AIRPAY_API_KEY` is currently
+> unused.** It is kept as a required variable because it is an issued credential
+> that may belong to another Airpay product. Worth asking Airpay what it is for.
+>
+> There is still no `AIRPAY_CLIENT_SECRET` variable, and none should be added.
 
 How each credential is actually used:
 
 ```
 OAuth2 encrypted payload
     client_id     ← AIRPAY_CLIENT_ID
-    client_secret ← AIRPAY_API_KEY        ← the confirmed mapping
+    client_secret ← AIRPAY_SECRET_KEY     ← verified against the live gateway
     merchant_id   ← AIRPAY_MID
     grant_type    = client_credentials
 
@@ -188,9 +202,10 @@ AES key     = md5( AIRPAY_USERNAME ~:~ AIRPAY_PASSWORD )   ← hex string, 32 AS
 ap_SecureHash inputs include AIRPAY_MID and AIRPAY_USERNAME
 ```
 
-`AIRPAY_SECRET_KEY` and `AIRPAY_API_KEY` are therefore **not
-interchangeable** — they feed different algorithms. Swapping them produces an
-OAuth failure (error 903) or a checksum rejection, not an obvious error message.
+Supplying `AIRPAY_API_KEY` as the OAuth secret produces
+`data.msg: "Invalid client id or secret"` — but inside an envelope that still
+says `"success"`, so it is easy to misread as a working authentication whose
+token has merely moved. Always read `data.success`.
 
 ---
 
@@ -509,8 +524,8 @@ excludes `.env`; keep it that way.
 # ── Airpay — SERVER ONLY, never VITE_ prefixed ──
 AIRPAY_MID=<FROM AIRPAY DASHBOARD>
 AIRPAY_CLIENT_ID=<FROM AIRPAY DASHBOARD>
-AIRPAY_API_KEY=<FROM AIRPAY DASHBOARD>          # = OAuth client_secret
-AIRPAY_SECRET_KEY=<FROM AIRPAY DASHBOARD>       # privatekey derivation
+AIRPAY_API_KEY=<FROM AIRPAY DASHBOARD>          # currently unused (see §5)
+AIRPAY_SECRET_KEY=<FROM AIRPAY DASHBOARD>       # OAuth client_secret + privatekey
 AIRPAY_USERNAME=<FROM AIRPAY DASHBOARD>
 AIRPAY_PASSWORD=<FROM AIRPAY DASHBOARD>
 AIRPAY_ENV=live

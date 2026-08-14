@@ -1407,3 +1407,37 @@ be false when money moved; leaving it `initiated` — as the first revision did 
 meant the sweep would re-verify it forever and the shopper would sit on
 "processing" with nothing surfacing the discrepancy. Nothing transitions out of
 `requires_review` automatically.
+
+## Credential mapping — corrected against the live gateway
+
+The merchant identified `AIRPAY_API_KEY` as the OAuth2 `client_secret`, and this
+integration was built that way. The live gateway rejects it:
+
+    {"data":{"success":false,"msg":"Invalid client id or secret"}}
+
+The identical request carrying `AIRPAY_SECRET_KEY` returns a token. Tested
+across url-encoded and multipart bodies and both URL forms, so the credential
+was the only variable. `client_secret` is therefore `AIRPAY_SECRET_KEY`.
+
+That value now serves two roles — the OAuth secret and the `secret` in the
+privatekey derivation — and `AIRPAY_API_KEY` is unused by this integration. It
+is kept as a required variable because it is an issued credential that may
+belong to another Airpay product.
+
+### The envelope is not the verdict
+
+This cost three diagnostic cycles and is worth stating plainly. A **rejected**
+OAuth grant returns:
+
+    status_code "200", response_code "00", status "success", message "Success",
+    data: { success: false, msg: "Invalid client id or secret" }
+
+The outer fields describe whether the request was *accepted*, not whether it
+*succeeded*. Only `data.success` is the outcome, and `data.msg` the reason. Any
+future v4 endpoint added here must be read the same way; treating the envelope
+as the result will silently report failures as successes.
+
+A successful grant returns `data: { access_token, expires_in: 360, token_type:
+"Bearer", scope: null }` — note `expires_in` is 360 in practice, not the 300 the
+documentation shows, which is why the TTL is read from the response rather than
+assumed.
