@@ -409,6 +409,9 @@ export const getAccessToken = async (): Promise<string> => {
     log.error('airpay.oauth.no_token', {
       httpStatus: response.status,
       envelopeDecrypted: parsed !== raw,
+      // Key names only — says exactly where the token actually lives if the
+      // search above still misses it, without another deploy cycle.
+      shape: describeShape(parsed),
       ...describeFailure(raw),
     });
 
@@ -473,33 +476,131 @@ const unwrapResponse = (body: unknown): unknown => {
   }
 };
 
+/** Bounds the search below, so a cyclic or pathological body cannot hang it. */
+const MAX_SEARCH_DEPTH = 6;
+
 /**
- * Reads a string field from an unknown JSON body, checking both the top level
- * and a nested `data` object — Airpay wraps some v4 responses and not others.
+ * Finds a scalar field anywhere in a decoded response body.
+ *
+ * The previous version looked only at the top level and one level under `data`,
+ * which is what the OAuth2 documentation shows. Against the live gateway that
+ * failed: Airpay answered `response_code: "00", status: "success"` — a genuine,
+ * authenticated success — and the token was simply not where the documented
+ * shape said it would be, so the request was reported as a credential failure.
+ *
+ * Rather than hard-code a second guess at the nesting, this walks the structure.
+ * It also parses nested JSON *strings*, because v4 double-encodes some payloads:
+ * a `data` field arriving as `"{\"access_token\":...}"` is a string, not an
+ * object, and every `typeof x === 'object'` check silently skips it.
+ *
+ * Being shape-tolerant here is the right trade: the value is verified by use —
+ * a wrong token simply fails the next call — so a permissive search cannot
+ * cause anything worse than the error we already had.
  */
-const readTokenField = (body: unknown, field: string): string | null => {
-  if (typeof body !== 'object' || body === null) {
+const findField = (value: unknown, field: string, depth = 0): string | null => {
+  if (depth > MAX_SEARCH_DEPTH || value === null || value === undefined) {
     return null;
   }
 
-  const record = body as Record<string, unknown>;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      return null;
+    }
+
+    try {
+      return findField(JSON.parse(trimmed), field, depth + 1);
+    } catch {
+      return null;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findField(entry, field, depth + 1);
+
+      if (found !== null) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
   const direct = record[field];
 
   if (typeof direct === 'string' || typeof direct === 'number') {
     return String(direct);
   }
 
-  const data = record.data;
+  for (const nested of Object.values(record)) {
+    const found = findField(nested, field, depth + 1);
 
-  if (typeof data === 'object' && data !== null) {
-    const nested = (data as Record<string, unknown>)[field];
-
-    if (typeof nested === 'string' || typeof nested === 'number') {
-      return String(nested);
+    if (found !== null) {
+      return found;
     }
   }
 
   return null;
+};
+
+/**
+ * Reads the access token, tolerating the naming variants v4 uses in practice.
+ *
+ * `access_token` is what the documentation shows; the others are cheap to try
+ * and cost nothing if absent.
+ */
+const readTokenField = (body: unknown, field: string): string | null => {
+  if (field !== 'access_token') {
+    return findField(body, field);
+  }
+
+  for (const alias of ['access_token', 'accessToken', 'access-token', 'token'] as const) {
+    const found = findField(body, alias);
+
+    if (found !== null && found !== '') {
+      return found;
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Describes the *shape* of a response — key names only, never values.
+ *
+ * If the token still cannot be found, this says exactly where to look next
+ * without another round trip. Field names are not secrets; the values beside
+ * them may be, so none are read.
+ */
+const describeShape = (body: unknown, depth = 0): string => {
+  if (depth > 2 || body === null || body === undefined) {
+    return typeof body;
+  }
+
+  if (Array.isArray(body)) {
+    return `array[${body.length}]`;
+  }
+
+  if (typeof body !== 'object') {
+    return typeof body;
+  }
+
+  return Object.entries(body as Record<string, unknown>)
+    .map(([key, value]) => {
+      if (value !== null && typeof value === 'object') {
+        return `${key}:{${describeShape(value, depth + 1)}}`;
+      }
+
+      return `${key}:${value === null ? 'null' : typeof value}`;
+    })
+    .join(',');
 };
 
 /** Clears the cached token. Exported for tests. */

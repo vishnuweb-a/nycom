@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 /**
  * Protocol-level tests for the Airpay primitives.
@@ -206,6 +206,93 @@ describe('OAuth2 response envelope', () => {
     expect(encdata.slice(0, 16)).toMatch(/^[0-9a-f]{16}$/);
     // Everything after the IV must be valid base64.
     expect(encdata.slice(16)).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+  });
+});
+
+describe('token extraction tolerates the real response shape', () => {
+  /*
+   * Against the live gateway, Airpay returned response_code "00" / "success" —
+   * an authenticated success — and the token was not where the documented
+   * `data.access_token` shape said. The extractor now walks the structure, and
+   * these cases pin the variants that must all resolve, since the wire format
+   * cannot be re-checked without another live call.
+   *
+   * `getAccessToken` is exercised through a stubbed `fetch`, so no request
+   * leaves the process.
+   */
+  const withResponse = async (payload: unknown) => {
+    const { encrypt, resetTokenCache } = await airpay();
+
+    resetTokenCache();
+
+    const stub = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ response: encrypt(payload as Record<string, string>) }),
+      } as unknown as Response),
+    );
+
+    vi.stubGlobal('fetch', stub);
+
+    try {
+      const { getAccessToken } = await airpay();
+
+      return await getAccessToken();
+    } finally {
+      vi.unstubAllGlobals();
+      (await airpay()).resetTokenCache();
+    }
+  };
+
+  it('finds the documented data.access_token shape', async () => {
+    await expect(
+      withResponse({
+        status: 'success',
+        response_code: '00',
+        data: { access_token: 'tok-documented', expires_in: 300 },
+      }),
+    ).resolves.toBe('tok-documented');
+  });
+
+  it('finds a top-level access_token', async () => {
+    await expect(
+      withResponse({ status: 'success', access_token: 'tok-top', expires_in: 300 }),
+    ).resolves.toBe('tok-top');
+  });
+
+  /* The most likely real cause: `data` arrives as a JSON string, not an object. */
+  it('finds a token inside a double-encoded data string', async () => {
+    await expect(
+      withResponse({
+        status: 'success',
+        data: JSON.stringify({ access_token: 'tok-stringified', expires_in: 300 }),
+      }),
+    ).resolves.toBe('tok-stringified');
+  });
+
+  it('finds a token nested more deeply than documented', async () => {
+    await expect(
+      withResponse({ status: 'success', data: { result: { access_token: 'tok-deep' } } }),
+    ).resolves.toBe('tok-deep');
+  });
+
+  it('finds a token inside an array', async () => {
+    await expect(
+      withResponse({ status: 'success', data: [{ access_token: 'tok-array' }] }),
+    ).resolves.toBe('tok-array');
+  });
+
+  it('accepts the camelCase alias', async () => {
+    await expect(
+      withResponse({ status: 'success', data: { accessToken: 'tok-camel' } }),
+    ).resolves.toBe('tok-camel');
+  });
+
+  it('still rejects a response that genuinely carries no token', async () => {
+    await expect(
+      withResponse({ status: 'failure', response_code: '903', message: 'Invalid credentials' }),
+    ).rejects.toThrow(/could not start a secure payment/i);
   });
 });
 
