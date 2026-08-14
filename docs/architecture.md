@@ -1244,3 +1244,166 @@ Orders are a frontend simulation: placed at checkout, persisted to `localStorage
 `yarnvia.orders.v1`, and read back by Order Success, My Orders and Order Detail. Nothing is written
 to Supabase — the `orders` table in the schema above remains unused. `lib/orderStorage.ts` is the
 single seam to replace when a real order API arrives.
+
+---
+
+# Implementation Notes — Airpay payment integration
+
+Implements `docs/payment.md`. Cash on Delivery, product data and Cloudinary are
+unchanged; nothing was migrated.
+
+## The server tier
+
+This project was a pure static SPA. It now has a small server tier — Vercel
+Functions under `api/` — because a payment integration cannot exist without one:
+credentials must be held somewhere the browser cannot read, the gateway callback
+is out-of-band and needs somewhere to land, and the payable amount must be
+derived somewhere the shopper cannot edit.
+
+    api/
+      _lib/env.ts              zod-validated server env, parsed lazily
+      _lib/db.ts               service-role Supabase client
+      _lib/log.ts              structured logging, redacts secret-shaped keys
+      _lib/http.ts             PublicError, error boundary, JSON conventions
+      _lib/airpay.ts           IST date, privatekey, AES, checksum, CRC32, OAuth
+      _lib/pricing.ts          server-side re-pricing from the catalogue
+      _lib/callbackPayload.ts  untrusted callback parsing
+      _lib/settle.ts           verification and idempotent settlement
+      payments/create.ts       POST — price, record, sign
+      payments/callback.ts     POST — Airpay server-to-server webhook
+      payments/return.ts       GET|POST — browser landing, redirects to the SPA
+      orders/[ref].ts          GET — authoritative status for the success page
+      health.ts                deployment check
+
+`tsconfig.api.json` typechecks this tree under `moduleResolution: bundler`, since
+Vercel bundles the functions with esbuild. It deliberately also includes
+`src/constants/commerce.ts`: the server imports the free-shipping threshold and
+shipping fee from the same module the storefront quotes, so the displayed total
+and the charged total cannot drift apart.
+
+`vercel.json`'s catch-all rewrite became `/((?!api/).*)`. Without the negative
+lookahead every `/api/*` request would be served `index.html`.
+
+## Two order models, on purpose
+
+| | Cash on Delivery | Pay Online |
+| --- | --- | --- |
+| Where the order lives | localStorage only | Supabase `orders`, cached locally |
+| Who computes the amount | the browser | the server, from the catalogue |
+| Who confirms it | nobody — nothing to confirm | Airpay Order Confirmation |
+
+COD is byte-for-byte the pre-existing flow. It moves no money, so there is
+nothing to verify and no reason to rewrite a working path. Persisting COD orders
+server-side is a reasonable future change (`payment.md` §17 Q6) but is out of
+scope here.
+
+## Trust boundaries
+
+Three rules govern the whole integration:
+
+1. **The browser proposes, the server prices.** `/api/payments/create` accepts
+   only `{ productId, size, quantity }` per line — there is no field in which a
+   client could state a price. `orders.amount` is derived from `products` and is
+   the figure every later check compares against.
+2. **A redirect is not a payment.** Returning from Airpay proves only that a
+   browser was pointed at a URL. The success page opens in a "confirming"
+   state and asks the server.
+3. **Only Order Confirmation settles an order.** `ap_SecureHash` is CRC32:
+   unkeyed, and computable by anyone holding the merchant ID and username. It is
+   checked as an integrity signal and is never treated as authentication. On a
+   sandbox MID — where Order Confirmation does not work — orders are left
+   unsettled rather than trusting the callback.
+
+Idempotency needs no new infrastructure. Settlement is a single conditional
+`UPDATE … WHERE order_ref = $1 AND payment_status NOT IN ('paid','failed',
+'cancelled')`; Postgres row locking makes concurrent callbacks resolve to
+exactly one winner, and the loser sees zero rows updated.
+
+## Timezone
+
+Airpay's checksum appends the merchant-local date and its reference
+implementation is PHP `date('Y-m-d')` on an IST server. Vercel runs UTC, so
+between 00:00 and 05:30 IST the UTC date is still the previous day — a checksum
+built from `toISOString().slice(0, 10)` would be rejected for five and a half
+hours every night and never during a daytime test. `istDate()` formats with
+`Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' })`, and the boundary
+is covered by tests.
+
+## Callback domains
+
+The two supplied URLs — `frontiva.online/callback/cpm/arp/collection` and
+`kkchat.in/callback/cpm/arp/collection` — are **not** used and nothing is sent to
+them. Neither domain is Yarnvia's. Yarnvia's own endpoint,
+`/api/payments/callback`, is what should be registered. See `payment.md` §11;
+the ownership question is still open and blocks callback registration.
+
+## Testing
+
+`vitest` was added (`npm test`). 64 unit tests cover the protocol primitives,
+the IST boundary window, server re-pricing and amount tampering, callback
+parsing, and settlement — including duplicate callbacks, a forged SUCCESS, and
+an amount mismatch. No test contacts Airpay.
+
+## Protocol verification — against official v4 documentation
+
+Verified against `docs.airpay.co.in/v4/...` (OAuth2, Encryption, Decryption,
+Checksum, Simple Transaction, Order Confirmation, IPN Callback) and the
+`llms-full.txt` dump. No live request was made.
+
+Confirmed exactly as implemented: the OAuth2 endpoint
+`POST https://kraken.airpay.co.in/airpay/pay/v4/api/oauth2/`; AES-256-CBC with
+PKCS5 padding; the encryption key as the **MD5 hex string used as 32 ASCII
+bytes**; the IV as 8 random bytes hex-encoded to 16 characters and prefixed in
+the clear; `privatekey = sha256(secret@username:|:password)`; the checksum as
+ksort → values concatenated with no separator → `Y-m-d` appended → SHA-256; and
+the `ap_SecureHash` CRC32 field order including the UPI `CUSTOMERVPA` suffix.
+
+One genuine mismatch was found and fixed: **v4 wraps responses as
+`{"response": "<16-hex IV><base64>"}`**, and the OAuth token is only readable
+after decrypting that envelope (`data.access_token`). The original code read
+`access_token` off the parsed JSON and would never have found it — a failure that
+would have presented as an invalid-credentials error. `unwrapResponse` now
+detects and decrypts the envelope, and tolerates the plain shape, because the
+Decryption page ("all the API responses are encrypted") and the Order
+Confirmation page ("the response is not encrypted") contradict each other.
+
+## Callback architecture — with the client's existing relay
+
+The client has confirmed that `frontiva.online/callback/cpm/arp/collection`
+forwards to `kkchat.in/callback/cpm/arp/collection`, and that this is their
+existing infrastructure. Yarnvia does not build, modify, or call it.
+
+The consequence that matters: **Airpay's callback and success URLs are configured
+per-MID, not per-transaction.** If they point at that relay, Airpay will never
+call `/api/payments/callback` and the shopper's browser will never reach
+`/api/payments/return`. Yarnvia therefore cannot depend on being notified.
+
+It does not have to be. Order Confirmation is a *pull* API keyed by `orderid`,
+which Yarnvia generates and owns, so Yarnvia can always ask rather than wait.
+Three independent triggers now drive the same verification, and settlement is
+identical regardless of which fires:
+
+    /api/payments/callback   if the relay is ever pointed here   (push)
+    /api/orders/:ref         shopper on the success page         (pull)
+    /api/payments/reconcile  Vercel Cron, every 15 minutes       (sweep)
+
+The sweep is what closes the gap where nobody is present — the shopper paid and
+closed the tab, and no callback arrived. Without it those orders would sit at
+`initiated` indefinitely while the money sat in the merchant account. It adds no
+infrastructure: a `crons` entry in `vercel.json` against the existing function
+runtime, authenticated with `CRON_SECRET`, batched and age-bounded.
+
+`/api/payments/callback` is retained unchanged. It is deliberately indifferent to
+its caller — Airpay directly, the client's relay, or anything else — because it
+re-verifies through Order Confirmation and trusts nothing in the request body.
+That property is why no shared secret is required for it to be safe, and why it
+works under any of the four possible roles without modification.
+
+### `requires_review`
+
+Airpay confirming a payment for an amount that does not match `orders.amount` is
+now a distinct terminal state rather than a log line. Marking it `failed` would
+be false when money moved; leaving it `initiated` — as the first revision did —
+meant the sweep would re-verify it forever and the shopper would sit on
+"processing" with nothing surfacing the discrepancy. Nothing transitions out of
+`requires_review` automatically.

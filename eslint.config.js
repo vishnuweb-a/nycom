@@ -61,6 +61,19 @@ export default tseslint.config(
     },
   },
   {
+    /*
+     * Vercel Functions run under Node, not in a browser. They also legitimately
+     * reach into `src/constants/` for the shipping rules the server must price
+     * with, so the `@/`-alias rule — which exists to stop relative chains
+     * *inside* the app — does not apply here.
+     */
+    files: ['api/**/*.ts'],
+    languageOptions: { globals: globals.node },
+    rules: {
+      'no-restricted-imports': 'off',
+    },
+  },
+  {
     // Node-context config files are not part of the browser app.
     files: ['*.config.{js,ts}'],
     languageOptions: { globals: globals.node },

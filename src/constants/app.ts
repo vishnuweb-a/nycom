@@ -7,7 +7,12 @@ export const APP = {
   tagline: 'Style Woven For Every Generation.',
   description:
     'Shop modern fashion for Men, Women and Children at Yarnvia. Premium quality clothing, fast delivery and easy returns.',
-  /** Production origin, no trailing slash. Used to build absolute canonical URLs. */
+  /**
+   * Production origin, no trailing slash. Used to build absolute canonical URLs.
+   *
+   * `PUBLIC_SITE_ORIGIN` and the return URL registered with Airpay must both
+   * match this exactly — see `docs/AIRPAY_YARNIVA_DEPLOYMENT.md` §12.
+   */
   origin: 'https://yarnvia.vercel.app',
 } as const;
 

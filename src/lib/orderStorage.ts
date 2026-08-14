@@ -39,7 +39,14 @@ const orderSchema = z.object({
   id: z.string().min(1),
   createdAt: z.string(),
   status: z.enum([...ORDER_STATUS_SEQUENCE, 'cancelled']),
-  paymentMethod: z.literal('cod'),
+  // Widened from z.literal('cod') for the Airpay integration. Backward
+  // compatible: orders written by an earlier build still parse, so upgrading
+  // does not wipe a shopper's history.
+  paymentMethod: z.enum(['cod', 'airpay']),
+  paymentStatus: z
+    .enum(['pending', 'initiated', 'paid', 'failed', 'cancelled', 'requires_review'])
+    .optional(),
+  accessToken: z.string().optional(),
   address: addressSchema,
   items: z.array(orderItemSchema).min(1),
   subtotal: z.number().nonnegative(),
@@ -80,3 +87,29 @@ export const appendOrder = (order: Order): void => {
 /** Finds one order by id. */
 export const findOrder = (orderId: string): Order | null =>
   readOrders().find((order) => order.id === orderId) ?? null;
+
+/**
+ * Patches a stored order in place.
+ *
+ * Used to reconcile the local cache of an online order with the server's
+ * authoritative payment status once verification has run. The local copy is
+ * never the source of that answer — this only stops My Orders showing
+ * "payment pending" for an order the server has since confirmed.
+ */
+export const updateOrder = (orderId: string, patch: Partial<Order>): void => {
+  try {
+    const orders = readOrders();
+    const index = orders.findIndex((order) => order.id === orderId);
+
+    if (index === -1) {
+      return;
+    }
+
+    const next = [...orders];
+    next[index] = { ...orders[index], ...patch } as Order;
+
+    window.localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Storage unavailable; the server remains authoritative regardless.
+  }
+};

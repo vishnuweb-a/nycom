@@ -21,6 +21,8 @@ import { DeliveryCard } from '@/pages/Checkout/sections/DeliveryCard';
 import { PaymentCard } from '@/pages/Checkout/sections/PaymentCard';
 import { appendOrder } from '@/lib/orderStorage';
 import { getCartProducts } from '@/services/cartValidation';
+import { createPayment, PaymentError, redirectToAirpay } from '@/services/payment';
+import type { PaymentMethod } from '@/types/order';
 import { calculateOrderSummary, reconcileCart } from '@/utils/cart';
 import { buildOrder } from '@/utils/order';
 import { formatPrice } from '@/utils/format';
@@ -31,13 +33,20 @@ const PLACEMENT_DELAY_MS = 900;
 /**
  * Single-page checkout — address, delivery, payment and summary on one screen.
  *
- * Deliberately not a wizard: with one delivery method and one payment method
- * there is nothing to branch on, and stepping through four screens to confirm
- * an address would add friction without adding clarity.
+ * Deliberately not a wizard: with one delivery method there is little to branch
+ * on, and stepping through four screens to confirm an address would add
+ * friction without adding clarity.
  *
- * Order placement is simulated entirely on the client — no database write, no
- * API call. The order is built from the validated cart, persisted to
- * localStorage, and the cart is cleared.
+ * Two payment paths, which behave very differently:
+ *
+ * - **Cash on Delivery** is unchanged from before this integration. Placement
+ *   is simulated on the client, the order is written to localStorage, and no
+ *   server is involved. No money moves, so nothing needs verifying.
+ *
+ * - **Pay Online** hands off to the server. `/api/payments/create` re-prices
+ *   the basket from the catalogue, records the authoritative order, and returns
+ *   signed fields; the browser forwards them to Airpay's hosted page. Nothing
+ *   here signs, encrypts, or decides an amount.
  */
 const CheckoutPage = () => {
   const { items, clearCart } = useCart();
@@ -46,6 +55,7 @@ const CheckoutPage = () => {
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isPlacing, setIsPlacing] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cod');
   /**
    * Set the moment an order is committed.
    *
@@ -106,11 +116,13 @@ const CheckoutPage = () => {
     },
   );
 
-  const confirmOrder = () => {
-    setIsPlacing(true);
-
-    // Simulated placement. No database write and no API call — this MVP is
-    // frontend only, and the order lives in localStorage.
+  /**
+   * Cash on Delivery — the original path, deliberately untouched.
+   *
+   * Simulated placement: no database write and no API call. The order is built
+   * from the validated cart, persisted to localStorage, and the cart cleared.
+   */
+  const placeCodOrder = () => {
     window.setTimeout(() => {
       const order = buildOrder(lines, summary, getValues());
 
@@ -122,6 +134,77 @@ const CheckoutPage = () => {
 
       void navigate(ROUTES.ORDER_SUCCESS, { state: { orderId: order.id }, replace: true });
     }, PLACEMENT_DELAY_MS);
+  };
+
+  /**
+   * Pay Online — hand off to the server, then to Airpay.
+   *
+   * The order is cached locally *before* the redirect so that a shopper who
+   * closes the tab at the gateway still finds the order in My Orders rather
+   * than nothing at all. It is cached as `initiated`, never as paid: at this
+   * point no money has moved, and only server-side verification may say
+   * otherwise.
+   *
+   * The cart is deliberately *not* cleared here. A payment that fails or is
+   * abandoned must leave the shopper able to try again, and emptying the basket
+   * on the way out would strand them. The success page clears it once the server
+   * confirms the payment.
+   */
+  const startOnlinePayment = async () => {
+    const purchasable = lines.filter((line) => line.purchasable).map((line) => line.item);
+
+    try {
+      const payment = await createPayment(purchasable, getValues());
+
+      // The server's figure is authoritative. If it disagrees with what the
+      // shopper was shown, stop and let them re-read the total rather than
+      // sending them to a payment page for an unexpected amount.
+      if (Math.abs(payment.amount - summary.grandTotal) > 0.01) {
+        showToast('Your order total has changed. Please review your cart.', 'error');
+        setConfirmOpen(false);
+        setIsPlacing(false);
+
+        return;
+      }
+
+      appendOrder(
+        buildOrder(lines, summary, getValues(), {
+          id: payment.orderRef,
+          paymentMethod: 'airpay',
+          paymentStatus: 'initiated',
+          accessToken: payment.accessToken,
+        }),
+      );
+
+      // Suppresses the empty-cart guard without emptying the cart, so leaving
+      // for the gateway does not look like an abandoned checkout.
+      setPlaced(true);
+
+      // Leaves the SPA entirely; no state update follows.
+      redirectToAirpay(payment);
+    } catch (error) {
+      showToast(
+        error instanceof PaymentError
+          ? error.message
+          : 'We could not start your payment. Please try again in a moment.',
+        'error',
+      );
+
+      setConfirmOpen(false);
+      setIsPlacing(false);
+    }
+  };
+
+  const confirmOrder = () => {
+    setIsPlacing(true);
+
+    if (paymentMethod === 'cod') {
+      placeCodOrder();
+
+      return;
+    }
+
+    void startOnlinePayment();
   };
 
   // An empty cart has nothing to check out; send the shopper back rather than
@@ -137,7 +220,7 @@ const CheckoutPage = () => {
         <header className="flex flex-col gap-1">
           <h1 className="text-h4 md:text-h2">Checkout</h1>
           <p className="text-base text-secondary">
-            Review your details and confirm your Cash on Delivery order.
+            Review your details and choose how you&apos;d like to pay.
           </p>
         </header>
 
@@ -151,7 +234,7 @@ const CheckoutPage = () => {
           >
             <AddressForm register={register} errors={errors} />
             <DeliveryCard />
-            <PaymentCard />
+            <PaymentCard value={paymentMethod} onChange={setPaymentMethod} disabled={isPlacing} />
 
             {/* Submits the form so validation runs before the modal opens. */}
             <Button type="submit" fullWidth className="hidden md:inline-flex lg:hidden">
@@ -188,13 +271,15 @@ const CheckoutPage = () => {
           <Button
             fullWidth
             isLoading={isPlacing}
-            loadingLabel="Placing your order"
+            loadingLabel={
+              paymentMethod === 'cod' ? 'Placing your order' : 'Creating secure payment'
+            }
             onClick={() => {
               void requestConfirmation();
             }}
             className="ml-auto flex-1"
           >
-            Place Order
+            {paymentMethod === 'cod' ? 'Place Order' : 'Pay Now'}
           </Button>
         </div>
       </div>
@@ -223,21 +308,38 @@ const CheckoutPage = () => {
             <Button
               fullWidth
               isLoading={isPlacing}
-              loadingLabel="Placing your order"
+              loadingLabel={
+                paymentMethod === 'cod' ? 'Placing your order' : 'Creating secure payment'
+              }
               onClick={confirmOrder}
             >
-              Confirm Order
+              {paymentMethod === 'cod' ? 'Confirm Order' : 'Proceed to Pay'}
             </Button>
           </>
         }
       >
-        <p>You have selected Cash on Delivery.</p>
-        <p className="mt-2">
-          Your order will be placed. Payment will be collected during delivery.
-        </p>
-        <p className="mt-4 font-semibold text-heading">
-          Amount payable on delivery: {formatPrice(summary.grandTotal)}
-        </p>
+        {paymentMethod === 'cod' ? (
+          <>
+            <p>You have selected Cash on Delivery.</p>
+            <p className="mt-2">
+              Your order will be placed. Payment will be collected during delivery.
+            </p>
+            <p className="mt-4 font-semibold text-heading">
+              Amount payable on delivery: {formatPrice(summary.grandTotal)}
+            </p>
+          </>
+        ) : (
+          <>
+            <p>You&apos;ll be taken to Airpay to complete your payment securely.</p>
+            <p className="mt-2">
+              Please don&apos;t close your browser or press back while the payment is in progress.
+              We&apos;ll confirm your order once payment is verified.
+            </p>
+            <p className="mt-4 font-semibold text-heading">
+              Amount payable now: {formatPrice(summary.grandTotal)}
+            </p>
+          </>
+        )}
       </Modal>
 
       {status === 'error' && (
