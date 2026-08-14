@@ -288,9 +288,10 @@ const HTTP_TIMEOUT_MS = 8_000;
  * never logged: an Airpay error can echo the submitted request, which would put
  * `encdata` — and therefore the credentials inside it — into the log.
  *
- * This whitelist is what makes a failure diagnosable. `response_code` 903 means
- * the credentials were rejected; a 404 with an HTML body means the endpoint path
- * is wrong. Without it, both look like an identical bare 502.
+ * ⚠ The outer envelope is not the verdict. A rejected OAuth grant still returns
+ * status_code 200, response_code "00", status "success", message "Success" —
+ * those describe the *transport*, not the outcome. The decision lives in
+ * `data.success`, with the reason in `data.msg`. Both are read below.
  */
 const describeFailure = (body: unknown): LogFields => {
   const unwrapped = unwrapResponse(body);
@@ -300,17 +301,44 @@ const describeFailure = (body: unknown): LogFields => {
   }
 
   const record = unwrapped as Record<string, unknown>;
-  const scalar = (key: string): string | undefined => {
-    const value = record[key];
 
-    return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+  const readScalar = (source: Record<string, unknown>, key: string): string | undefined => {
+    const value = source[key];
+
+    if (typeof value === 'boolean') {
+      return String(value);
+    }
+
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return undefined;
+    }
+
+    // Bounded: a gateway message is short, and an unbounded one could carry an
+    // echo of the request. Truncating keeps the diagnostic without the risk.
+    return String(value).slice(0, 200);
   };
 
+  /*
+   * `data` carries the real outcome, and it is not the same thing as the outer
+   * envelope.
+   *
+   * The envelope reports whether the *request* was accepted: a rejected OAuth
+   * grant still comes back as status_code 200, response_code "00",
+   * status "success", message "Success". Reading only those fields made a
+   * refusal look like an authenticated success, which cost a full diagnostic
+   * cycle. `data.success` is the actual verdict and `data.msg` the reason.
+   */
+  const data = record.data;
+  const dataRecord =
+    typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {};
+
   return {
-    airpayStatusCode: scalar('status_code'),
-    airpayResponseCode: scalar('response_code'),
-    airpayStatus: scalar('status'),
-    airpayMessage: scalar('message'),
+    airpayStatusCode: readScalar(record, 'status_code'),
+    airpayResponseCode: readScalar(record, 'response_code'),
+    airpayStatus: readScalar(record, 'status'),
+    airpayMessage: readScalar(record, 'message'),
+    airpayDataSuccess: readScalar(dataRecord, 'success'),
+    airpayDataMsg: readScalar(dataRecord, 'msg') ?? readScalar(dataRecord, 'message'),
   };
 };
 
