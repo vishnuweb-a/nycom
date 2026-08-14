@@ -82,7 +82,23 @@ const md5Hex = (input: string): string => createHash('md5').update(input, 'utf8'
 export const privateKey = (): string => {
   const env = serverEnv();
 
-  return sha256Hex(`${env.AIRPAY_SECRET_KEY}@${env.AIRPAY_USERNAME}:|:${env.AIRPAY_PASSWORD}`);
+  /*
+   * `AIRPAY_API_KEY` is the `secret` here — established against the live
+   * gateway, and the opposite of the OAuth secret.
+   *
+   * Airpay resolves the merchant *from* this value, so the two credentials
+   * produce distinguishable failures at the hosted page:
+   *
+   *   sha256(AIRPAY_SECRET_KEY@…) -> "Merchant Key Authentication Failed"
+   *   sha256(AIRPAY_API_KEY@…)    -> "Invalid Domain"
+   *
+   * The second is progress, not a worse error: the key was accepted and the
+   * request advanced to the domain check. Stable across repeated runs.
+   *
+   * So the two credentials are simply swapped relative to what was assumed:
+   * AIRPAY_SECRET_KEY is the OAuth client_secret, AIRPAY_API_KEY is this.
+   */
+  return sha256Hex(`${env.AIRPAY_API_KEY}@${env.AIRPAY_USERNAME}:|:${env.AIRPAY_PASSWORD}`);
 };
 
 /**

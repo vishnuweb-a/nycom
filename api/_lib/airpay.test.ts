@@ -18,6 +18,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 const USERNAME = 'test-user';
 const PASSWORD = 'test-pass';
 const SECRET_KEY = 'test-secret';
+const API_KEY = 'test-api-key';
 const MID = 'TESTMID';
 
 beforeAll(() => {
@@ -25,7 +26,7 @@ beforeAll(() => {
   process.env.SUPABASE_SERVICE_ROLE = 'test-service-role';
   process.env.AIRPAY_MID = MID;
   process.env.AIRPAY_CLIENT_ID = 'test-client-id';
-  process.env.AIRPAY_API_KEY = 'test-api-key';
+  process.env.AIRPAY_API_KEY = API_KEY;
   process.env.AIRPAY_SECRET_KEY = SECRET_KEY;
   process.env.AIRPAY_USERNAME = USERNAME;
   process.env.AIRPAY_PASSWORD = PASSWORD;
@@ -338,14 +339,31 @@ describe('failure logging never leaks credentials', () => {
 });
 
 describe('privateKey', () => {
-  it('is sha256(secret@username:|:password)', async () => {
+  /*
+   * The `secret` is AIRPAY_API_KEY, not AIRPAY_SECRET_KEY. Verified against the
+   * live gateway: the SECRET_KEY form is refused outright ("Merchant Key
+   * Authentication Failed") while the API_KEY form is recognised and advances to
+   * the next check. The two credentials are the reverse of what was assumed —
+   * SECRET_KEY is the OAuth client_secret — so this test pins which is which.
+   */
+  it('is sha256(AIRPAY_API_KEY@username:|:password)', async () => {
     const { privateKey } = await airpay();
 
     const expected = createHash('sha256')
-      .update(`${SECRET_KEY}@${USERNAME}:|:${PASSWORD}`, 'utf8')
+      .update(`${API_KEY}@${USERNAME}:|:${PASSWORD}`, 'utf8')
       .digest('hex');
 
     expect(privateKey()).toBe(expected);
+  });
+
+  it('is not derived from the OAuth client secret', async () => {
+    const { privateKey } = await airpay();
+
+    const wrong = createHash('sha256')
+      .update(`${SECRET_KEY}@${USERNAME}:|:${PASSWORD}`, 'utf8')
+      .digest('hex');
+
+    expect(privateKey()).not.toBe(wrong);
   });
 });
 
