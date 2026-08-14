@@ -68,7 +68,7 @@ than wait. Three triggers drive the same settlement path:
 | --- | --- | --- |
 | Push | `/api/payments/callback` | Airpay or the relay calls us — if ever configured |
 | Pull | `/api/orders/:ref` | The shopper is on the success page |
-| Sweep | `/api/payments/reconcile` | Vercel Cron, every 15 minutes |
+| Sweep | `/api/payments/reconcile` | Vercel Cron, daily (Hobby plan limit) |
 
 The sweep covers the case where nobody is present: the shopper paid and closed
 the tab, and no callback arrived. Without it, those orders would sit unsettled
@@ -255,7 +255,7 @@ Documented from the real file — nothing invented:
   "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
 
   // Reconciliation sweep. Requires CRON_SECRET.
-  "crons": [{ "path": "/api/payments/reconcile", "schedule": "*/15 * * * *" }],
+  "crons": [{ "path": "/api/payments/reconcile", "schedule": "0 3 * * *" }],
 
   "headers": [ /* immutable asset caching; nosniff, DENY, Referrer-Policy,
                   Permissions-Policy on all routes */ ]
@@ -271,10 +271,16 @@ Do **not** add `CLOUDINARY_API_KEY` or `CLOUDINARY_API_SECRET`.
 
 ### 7.4 Cron
 
-Vercel Cron is available on Pro and above; on Hobby, cron frequency is limited.
-**Confirm your plan supports a 15-minute schedule** — if it does not, either
-raise the interval in `vercel.json` or accept that unattended payments settle
-only when the shopper revisits the success page.
+**This project is on the Hobby plan, which permits cron only once per day.**
+`vercel.json` is set to `0 3 * * *` (08:30 IST) accordingly.
+
+This matters: a sub-daily schedule on Hobby is rejected at deploy time and
+**fails the entire deployment**, leaving production on the previous commit. If a
+deploy ever succeeds locally but never appears on the site, check this first.
+
+Consequence of the daily cadence: a shopper who pays and closes the tab may wait
+up to a day for their order to settle. Shoppers who return to the success page
+are unaffected. On Pro, raise it to `*/15 * * * *`.
 
 Vercel presents `Authorization: Bearer $CRON_SECRET` automatically once
 `CRON_SECRET` is set as an environment variable.
@@ -324,16 +330,16 @@ Do not change anything yet. What you find determines everything below.
 
 | If the Success/Return URL is… | Then… |
 | --- | --- |
-| Already a Yarnvia URL | Confirm it is exactly `https://yarnvia.vercel.app/api/payments/return` |
+| Already a Yarnvia URL | Confirm it is exactly `https://www.yarnvia.online/api/payments/return` |
 | The client's relay (`frontiva.online/...`) | **The customer never returns to Yarnvia.** See below |
-| Empty / unset | Set it to `https://yarnvia.vercel.app/api/payments/return` |
+| Empty / unset | Set it to `https://www.yarnvia.online/api/payments/return` |
 
 If it points at the relay, one of these must happen — it is the client's
 decision, not a code change:
 
-1. **Repoint the return URL** to `https://yarnvia.vercel.app/api/payments/return`; or
+1. **Repoint the return URL** to `https://www.yarnvia.online/api/payments/return`; or
 2. **Have the relay redirect the browser onward** to
-   `https://yarnvia.vercel.app/api/payments/return`, preserving the `orderid`; or
+   `https://www.yarnvia.online/api/payments/return`, preserving the `orderid`; or
 3. **Accept that customers do not return to Yarnvia.** The payment still settles
    correctly via the cron sweep, but the shopper sees no confirmation page. This
    is a poor experience and not recommended.
@@ -341,7 +347,7 @@ decision, not a code change:
 ### Step 3 — the IPN / callback URL is optional
 
 `POST /api/payments/callback` is available at
-`https://yarnvia.vercel.app/api/payments/callback` if the client wants Yarnvia
+`https://www.yarnvia.online/api/payments/callback` if the client wants Yarnvia
 notified directly. It requires **no code change** to accept traffic and needs no
 shared secret to be safe, because it re-verifies everything through Order
 Confirmation and trusts nothing in the request body.
@@ -560,31 +566,31 @@ this repository, a ticket, or a chat message.
 | `CRON_SECRET` | Generate securely (command above) |
 | `CLOUDINARY_API_KEY` / `_SECRET` | Cloudinary console — local only |
 
-> ### `PUBLIC_SITE_ORIGIN` — set
+> ### `PUBLIC_SITE_ORIGIN` — confirmed from the Vercel dashboard
 >
 > ```
-> PUBLIC_SITE_ORIGIN=https://yarnvia.vercel.app
+> PUBLIC_SITE_ORIGIN=https://www.yarnvia.online
 > ```
 >
-> This is the Vercel-assigned domain, and it is what `src/constants/app.ts`
-> (`APP.origin`) and the `<link rel="canonical">` in `index.html` also use.
+> The Vercel project (`nycom`) has exactly two domains attached:
+> **`www.yarnvia.online`** and `nycom-bay.vercel.app`. An earlier
+> `yarnvia.vercel.app` value in `constants/app.ts` was a placeholder for a
+> domain that does not exist on this project and would not have resolved.
 >
-> `src/constants/company.ts` separately reads `yarnvia.online` — the registered
-> domain as written in the legal copy. That is deliberate and is not a URL; do
-> not "align" the two.
+> Applied to `PUBLIC_SITE_ORIGIN`, `APP.origin` in `src/constants/app.ts`, and
+> the `<link rel="canonical">` in `index.html`.
 >
-> **If you later move to a custom domain**, these must be changed together, and
-> the origin is matched literally by Airpay — `www.example.com` and
-> `example.com` are different origins to it. Four places:
+> `src/constants/company.ts` separately reads `yarnvia.online` without `www` —
+> the registered domain as written in the legal copy, not a URL. Left as is.
 >
-> 1. `PUBLIC_SITE_ORIGIN` in Vercel
-> 2. `APP.origin` in `src/constants/app.ts`
-> 3. the canonical link in `index.html`
-> 4. the Success / Return URL registered in the Airpay dashboard
+> **`www` is part of the origin.** Airpay matches the return URL literally, so
+> `https://www.yarnvia.online` and `https://yarnvia.online` are different
+> origins to it. Register
+> `https://www.yarnvia.online/api/payments/return` on the `www` host.
 >
-> Prefer pointing Airpay at the exact canonical host rather than relying on a
-> redirect: Airpay sends the return leg as a form POST, and a redirect hop adds
-> a way for fields to be dropped.
+> Prefer pointing Airpay at the canonical host rather than relying on a
+> redirect: the return leg is a form POST, and a redirect hop adds a way for
+> fields to be dropped.
 
 ---
 
@@ -721,7 +727,7 @@ row is created for COD** — that is correct and intended.
 - [ ] `AIRPAY_ENV=live`
 - [ ] `SUPABASE_URL`
 - [ ] `SUPABASE_SERVICE_ROLE`
-- [ ] `PUBLIC_SITE_ORIGIN` = `https://yarnvia.vercel.app`
+- [ ] `PUBLIC_SITE_ORIGIN` = `https://www.yarnvia.online`
 - [ ] `CRON_SECRET`
 
 **Environment — frontend**
@@ -735,7 +741,8 @@ row is created for COD** — that is correct and intended.
 **Vercel**
 
 - [ ] Production domain attached and matching `PUBLIC_SITE_ORIGIN`
-- [ ] Cron schedule supported by the current plan
+- [ ] Cron schedule valid for the plan (Hobby = daily only; a sub-daily
+      schedule fails the deployment outright)
 - [ ] Redeployed after the final variable change
 
 **Airpay dashboard**
@@ -994,7 +1001,8 @@ in a dashboard — no code change can address them.
 - **Order Confirmation response encryption.** Airpay's Decryption page says all
   responses are encrypted; the Order Confirmation page says its response is not.
   The code handles both shapes.
-- **Cron on Hobby plans.** Confirm the 15-minute schedule is permitted.
+- **Cron cadence.** Hobby permits daily only, so unattended orders can take
+  up to a day to settle. Raise to `*/15 * * * *` if the plan is upgraded.
 
 ---
 

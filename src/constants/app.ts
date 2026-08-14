@@ -13,7 +13,7 @@ export const APP = {
    * `PUBLIC_SITE_ORIGIN` and the return URL registered with Airpay must both
    * match this exactly — see `docs/AIRPAY_YARNIVA_DEPLOYMENT.md` §12.
    */
-  origin: 'https://yarnvia.vercel.app',
+  origin: 'https://www.yarnvia.online',
 } as const;
 
 /** Absolute URL for a route path, for canonical tags and structured data. */

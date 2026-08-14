@@ -29,16 +29,41 @@ import { settleOrder } from '../_lib/settle';
  *
  * It introduces no new infrastructure — a Vercel Cron entry in `vercel.json`
  * against the existing function runtime. No queue, no Redis, no worker.
+ *
+ * ⚠ Cadence is plan-limited. The Hobby plan permits cron only once per day, and
+ * `vercel.json` is set accordingly (`0 3 * * *`, i.e. 08:30 IST). A shopper who
+ * pays and closes the tab may therefore wait up to a day for their order to
+ * settle. Shoppers who return to the success page are unaffected — their poll
+ * settles immediately. On Pro, a fifteen-minute schedule closes the gap;
+ * `MAX_AGE_MS` below is sized to tolerate either cadence.
  */
 
 /** Give the normal paths a chance first; only sweep orders older than this. */
 const MIN_AGE_MS = 5 * 60_000;
 
-/** Past this, a payment is not going to appear. Stop asking and flag it. */
-const MAX_AGE_MS = 24 * 60 * 60_000;
+/**
+ * Upper bound on how old an order can be and still be swept.
+ *
+ * This must comfortably exceed the cron interval, or orders fall through the
+ * gap. On the Hobby plan the sweep runs once a day, so a 24-hour window would
+ * be exactly one interval wide: an order created shortly after one run could
+ * pass 24 hours before the next, drop out of the window, and never be settled
+ * at all — the precise failure this endpoint exists to prevent.
+ *
+ * Seven days gives six spare runs to catch anything missed, and still bounds
+ * the query so it cannot degrade into a full-table scan as the store grows.
+ */
+const MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 
-/** Bounded per invocation, so a backlog cannot exhaust the function timeout. */
-const BATCH_SIZE = 20;
+/**
+ * Bounded per invocation, so a backlog cannot exhaust the function timeout.
+ *
+ * Each order costs one Order Confirmation round trip, so this is the real limit
+ * on runtime. At a daily cadence this must absorb a full day of unattended
+ * payments; raise it — or raise the cron frequency — if the logged `examined`
+ * count starts hitting this ceiling.
+ */
+const BATCH_SIZE = 50;
 
 interface StaleOrder {
   readonly order_ref: string;

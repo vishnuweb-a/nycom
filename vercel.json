@@ -4,7 +4,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
-  "crons": [{ "path": "/api/payments/reconcile", "schedule": "*/15 * * * *" }],
+  "crons": [{ "path": "/api/payments/reconcile", "schedule": "0 3 * * *" }],
   "headers": [
     {
       "source": "/assets/(.*)",
