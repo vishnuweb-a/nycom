@@ -32,7 +32,7 @@ beforeAll(() => {
   process.env.AIRPAY_ENV = 'sandbox';
 });
 
-const airpay = async () => import('./airpay');
+const airpay = async () => import('./airpay.js');
 
 describe('istDate', () => {
   it('formats as YYYY-MM-DD', async () => {

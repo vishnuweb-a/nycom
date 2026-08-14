@@ -1,7 +1,7 @@
 import type { VercelRequest } from '@vercel/node';
 
-import { decrypt } from './airpay';
-import type { CallbackPayload } from './settle';
+import { decrypt } from './airpay.js';
+import type { CallbackPayload } from './settle.js';
 
 /**
  * Parses an Airpay callback or return payload.

@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { parseCallback } from '../_lib/callbackPayload';
-import { methodNotAllowed, sendJson, withErrorHandling } from '../_lib/http';
-import { log } from '../_lib/log';
-import { settleOrder } from '../_lib/settle';
+import { parseCallback } from '../_lib/callbackPayload.js';
+import { methodNotAllowed, sendJson, withErrorHandling } from '../_lib/http.js';
+import { log } from '../_lib/log.js';
+import { settleOrder } from '../_lib/settle.js';
 
 /**
  * POST /api/payments/callback — Airpay's server-to-server webhook.

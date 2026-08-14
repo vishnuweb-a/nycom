@@ -1,8 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
-import { FREE_SHIPPING_THRESHOLD, SHIPPING_FEE } from '../../src/constants/commerce';
-import { db } from './db';
-import { PublicError } from './http';
+import { db } from './db.js';
+import { PublicError } from './http.js';
 
 /**
  * Server-side re-pricing — the whole security model of this integration.
@@ -12,11 +11,26 @@ import { PublicError } from './http';
  * and the grand total are all re-derived from the `products` table on every
  * request. A client that submits a ₹1 total for a ₹5,000 basket gets charged
  * ₹5,000, because its total was never read in the first place.
- *
- * The shipping rules are imported from `src/constants/commerce.ts` rather than
- * restated here, so the figure the storefront quotes and the figure the server
- * charges cannot drift apart.
  */
+
+/*
+ * Shipping rules, restated here rather than imported from
+ * `src/constants/commerce.ts`.
+ *
+ * Reaching outside `api/` at runtime is unsafe on this deployment: Vercel
+ * transpiles each function file individually instead of bundling, so a module
+ * living outside the functions tree may simply not be emitted — and the failure
+ * mode is a 500 on first request, not a build error.
+ *
+ * Duplicating the numbers would normally risk drift between what the storefront
+ * quotes and what the server charges, which is exactly the bug this module
+ * exists to prevent. `pricing.test.ts` closes that hole by importing the real
+ * constants and asserting these match, so any divergence fails the test suite
+ * rather than silently mispricing an order. Tests are never deployed, so the
+ * cross-boundary import is safe there.
+ */
+const FREE_SHIPPING_THRESHOLD = 999;
+const SHIPPING_FEE = 79;
 
 /** What the browser is allowed to say about a line: what, which size, how many. */
 export interface ProposedLine {

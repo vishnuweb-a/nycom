@@ -26,7 +26,7 @@ beforeAll(() => {
 const request = (body: unknown, query: unknown = {}): VercelRequest =>
   ({ body, query, method: 'POST', headers: {} }) as VercelRequest;
 
-const parse = async () => (await import('./callbackPayload')).parseCallback;
+const parse = async () => (await import('./callbackPayload.js')).parseCallback;
 
 describe('parseCallback', () => {
   it('reads the documented uppercase field names', async () => {
@@ -102,7 +102,7 @@ describe('parseCallback', () => {
   });
 
   it('decrypts an encdata envelope', async () => {
-    const { encrypt } = await import('./airpay');
+    const { encrypt } = await import('./airpay.js');
     const parseCallback = await parse();
 
     const encdata = encrypt({
@@ -123,7 +123,7 @@ describe('parseCallback', () => {
    * fields wholesale rather than merging with them.
    */
   it('does not let outer plaintext fields survive alongside encdata', async () => {
-    const { encrypt } = await import('./airpay');
+    const { encrypt } = await import('./airpay.js');
     const parseCallback = await parse();
 
     const encdata = encrypt({ TRANSACTIONID: 'YV-ENC-0002', AMOUNT: '5.00' });

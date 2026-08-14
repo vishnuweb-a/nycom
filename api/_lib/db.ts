@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import { serverEnv } from './env';
+import { serverEnv } from './env.js';
 
 /**
  * Service-role Supabase client — server functions only.

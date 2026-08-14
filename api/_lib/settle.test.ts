@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as AirpayNamespace from './airpay';
+import type * as AirpayNamespace from './airpay.js';
 
 /**
  * Settlement tests — the rules that decide whether money is believed to have
@@ -37,7 +37,7 @@ const TERMINAL = ['paid', 'failed', 'cancelled', 'requires_review'];
  * because that single clause *is* the idempotency mechanism — a double that
  * ignored it would make these tests pass while the real thing double-settled.
  */
-vi.mock('./db', () => ({
+vi.mock('./db.js', () => ({
   db: () => ({
     from: () => ({
       select: () => ({
@@ -72,7 +72,7 @@ vi.mock('./db', () => ({
 
 let isLive = true;
 
-vi.mock('./env', () => ({
+vi.mock('./env.js', () => ({
   isLiveMid: () => isLive,
   serverEnv: () => ({
     AIRPAY_MID: 'TESTMID',
@@ -82,7 +82,7 @@ vi.mock('./env', () => ({
 
 let gatewaySays: { transactionStatus: number | null; amount: number | null } | null = null;
 
-vi.mock('./airpay', async (importOriginal) => {
+vi.mock('./airpay.js', async (importOriginal) => {
   const actual = await importOriginal<typeof AirpayNamespace>();
 
   return {
@@ -134,7 +134,7 @@ beforeEach(() => {
   ];
 });
 
-const settle = async () => (await import('./settle')).settleOrder;
+const settle = async () => (await import('./settle.js')).settleOrder;
 
 describe('settleOrder — the happy path', () => {
   it('marks an order paid when the gateway confirms it for the right amount', async () => {
@@ -303,7 +303,7 @@ describe('settleOrder — inconclusive outcomes stay inconclusive', () => {
 
 describe('cancelOrder', () => {
   it('cancels an initiated order', async () => {
-    const { cancelOrder } = await import('./settle');
+    const { cancelOrder } = await import('./settle.js');
 
     expect(await cancelOrder(ORDER_REF)).toBe(true);
     expect(rows[0].payment_status).toBe('cancelled');
@@ -312,7 +312,7 @@ describe('cancelOrder', () => {
   it('cannot cancel an order that has already been paid', async () => {
     rows[0].payment_status = 'paid';
 
-    const { cancelOrder } = await import('./settle');
+    const { cancelOrder } = await import('./settle.js');
 
     expect(await cancelOrder(ORDER_REF)).toBe(false);
     expect(rows[0].payment_status).toBe('paid');

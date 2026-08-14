@@ -1,17 +1,28 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
 
-import { checksum, encrypt, getAccessToken, PAYMENT_ACTION_URL, privateKey } from '../_lib/airpay';
-import { db } from '../_lib/db';
-import { serverEnv } from '../_lib/env';
+import {
+  checksum,
+  encrypt,
+  getAccessToken,
+  PAYMENT_ACTION_URL,
+  privateKey,
+} from '../_lib/airpay.js';
+import { db } from '../_lib/db.js';
+import { serverEnv } from '../_lib/env.js';
 import {
   logTransition,
   methodNotAllowed,
   PublicError,
   sendJson,
   withErrorHandling,
-} from '../_lib/http';
-import { formatAmount, generateAccessToken, generateOrderRef, priceOrder } from '../_lib/pricing';
+} from '../_lib/http.js';
+import {
+  formatAmount,
+  generateAccessToken,
+  generateOrderRef,
+  priceOrder,
+} from '../_lib/pricing.js';
 
 /**
  * POST /api/payments/create — begin an online payment.

@@ -6,9 +6,23 @@
     "types": ["node"],
     "skipLibCheck": true,
 
-    /* Vercel bundles these with esbuild, so extensionless imports resolve. */
-    "module": "esnext",
-    "moduleResolution": "bundler",
+    /*
+     * `nodenext`, NOT `bundler`.
+     *
+     * Vercel does not bundle these functions — it transpiles each `.ts` to a
+     * sibling `.js` and lets Node's own ESM loader resolve them at runtime.
+     * Because `package.json` declares `"type": "module"`, that loader requires
+     * an explicit file extension on every relative import; an extensionless
+     * `./_lib/env` throws ERR_MODULE_NOT_FOUND on the first request and takes
+     * the whole function down before any handler code runs.
+     *
+     * `bundler` resolution hid this, because it permits extensionless imports
+     * that the deployed runtime rejects — the build was clean and every
+     * endpoint 500'd. `nodenext` matches the real runtime, so a missing `.js`
+     * is now a compile error here rather than a production outage.
+     */
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "isolatedModules": true,

@@ -1,10 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { parseCallback } from '../_lib/callbackPayload';
-import { db } from '../_lib/db';
-import { withErrorHandling } from '../_lib/http';
-import { log } from '../_lib/log';
-import { settleOrder } from '../_lib/settle';
+import { parseCallback } from '../_lib/callbackPayload.js';
+import { db } from '../_lib/db.js';
+import { withErrorHandling } from '../_lib/http.js';
+import { log } from '../_lib/log.js';
+import { settleOrder } from '../_lib/settle.js';
 
 /**
  * GET|POST /api/payments/return — where Airpay sends the customer's browser.

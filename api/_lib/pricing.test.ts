@@ -40,7 +40,7 @@ const PRODUCT_B = {
 let catalogue: unknown[] = [];
 let queryError: { message: string } | null = null;
 
-vi.mock('./db', () => ({
+vi.mock('./db.js', () => ({
   db: () => ({
     from: () => ({
       select: () => ({
@@ -59,7 +59,7 @@ beforeAll(() => {
   queryError = null;
 });
 
-const pricing = async () => import('./pricing');
+const pricing = async () => import('./pricing.js');
 
 describe('priceOrder', () => {
   it('prices from the catalogue, using discount_price when present', async () => {
@@ -206,6 +206,37 @@ describe('priceOrder', () => {
     }));
 
     await expect(priceOrder(lines)).rejects.toThrow(/too many items/i);
+  });
+});
+
+/*
+ * The guard that makes restating the shipping rules in `pricing.ts` safe.
+ *
+ * The server cannot import `src/constants/commerce.ts` at runtime — see the
+ * comment there — so the numbers are duplicated. A test can import both, and
+ * this is where drift is caught: if anyone changes the storefront's shipping
+ * threshold or fee without changing the server's, the suite fails here instead
+ * of the shop quoting one total and charging another.
+ */
+describe('shipping rules match the storefront', () => {
+  it('charges exactly what src/constants/commerce.ts quotes', async () => {
+    const { priceOrder } = await pricing();
+    const { FREE_SHIPPING_THRESHOLD, SHIPPING_FEE } =
+      await import('../../src/constants/commerce.js');
+
+    // One unit of PRODUCT_B is 499 — below any sane threshold, so shipping applies.
+    const below = await priceOrder([{ productId: PRODUCT_B.id, size: 'L', quantity: 1 }]);
+
+    expect(below.shipping).toBe(SHIPPING_FEE);
+
+    // Prove the threshold itself agrees, by pricing a basket that just clears it.
+    const unitsToClear = Math.ceil(FREE_SHIPPING_THRESHOLD / 499);
+    const above = await priceOrder([
+      { productId: PRODUCT_B.id, size: 'L', quantity: unitsToClear },
+    ]);
+
+    expect(499 * unitsToClear).toBeGreaterThanOrEqual(FREE_SHIPPING_THRESHOLD);
+    expect(above.shipping).toBe(0);
   });
 });
 

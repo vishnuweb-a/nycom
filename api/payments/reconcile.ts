@@ -1,11 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { timingSafeEqual } from 'node:crypto';
 
-import { db } from '../_lib/db';
-import { serverEnv } from '../_lib/env';
-import { methodNotAllowed, PublicError, sendJson, withErrorHandling } from '../_lib/http';
-import { log } from '../_lib/log';
-import { settleOrder } from '../_lib/settle';
+import { db } from '../_lib/db.js';
+import { serverEnv } from '../_lib/env.js';
+import { methodNotAllowed, PublicError, sendJson, withErrorHandling } from '../_lib/http.js';
+import { log } from '../_lib/log.js';
+import { settleOrder } from '../_lib/settle.js';
 
 /**
  * Scheduled reconciliation — pulls the truth for orders nobody told us about.

@@ -1,8 +1,13 @@
-import { AIRPAY_STATUS, verifySecureHash, verifyTransaction, type SecureHashInput } from './airpay';
-import { db } from './db';
-import { isLiveMid } from './env';
-import { logTransition } from './http';
-import { log } from './log';
+import {
+  AIRPAY_STATUS,
+  verifySecureHash,
+  verifyTransaction,
+  type SecureHashInput,
+} from './airpay.js';
+import { db } from './db.js';
+import { isLiveMid } from './env.js';
+import { logTransition } from './http.js';
+import { log } from './log.js';
 
 /**
  * Order settlement — the single place an order may be marked paid.

@@ -1,9 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { timingSafeEqual } from 'node:crypto';
 
-import { db } from '../_lib/db';
-import { methodNotAllowed, PublicError, sendJson, withErrorHandling } from '../_lib/http';
-import { settleOrder } from '../_lib/settle';
+import { db } from '../_lib/db.js';
+import { methodNotAllowed, PublicError, sendJson, withErrorHandling } from '../_lib/http.js';
+import { settleOrder } from '../_lib/settle.js';
 
 /**
  * GET /api/orders/:ref?t=<access_token> — authoritative payment status.

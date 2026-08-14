@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { serverEnv } from './_lib/env';
-import { methodNotAllowed, sendJson, withErrorHandling } from './_lib/http';
+import { serverEnv } from './_lib/env.js';
+import { methodNotAllowed, sendJson, withErrorHandling } from './_lib/http.js';
 
 /**
  * Deployment health check.

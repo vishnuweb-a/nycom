@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { errorMessage, log, type LogFields } from './log';
+import { errorMessage, log, type LogFields } from './log.js';
 
 /**
  * Shared HTTP conventions for the payment functions.

@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
-import { serverEnv } from './env';
-import { PublicError } from './http';
-import { errorMessage, log } from './log';
+import { serverEnv } from './env.js';
+import { PublicError } from './http.js';
+import { errorMessage, log } from './log.js';
 
 /**
  * Airpay v4 protocol primitives — encryption, checksum, private key, OAuth.
