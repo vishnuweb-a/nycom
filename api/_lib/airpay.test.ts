@@ -209,6 +209,47 @@ describe('OAuth2 response envelope', () => {
   });
 });
 
+describe('failure logging never leaks credentials', () => {
+  /*
+   * `describeFailure` reads a whitelist of Airpay's own status fields so an
+   * OAuth failure is diagnosable. The danger it must avoid: an Airpay error can
+   * echo the submitted request, and that request contains `encdata` — which
+   * carries the client secret. The logger redacts by key name as a second line
+   * of defence, but the first is never extracting the field at all.
+   */
+  it('redacts secret-shaped keys in structured logs', async () => {
+    const { log } = await import('./log.js');
+
+    const lines: string[] = [];
+    const original = console.warn;
+    console.warn = (line: string) => lines.push(line);
+
+    try {
+      log.warn('test.event', {
+        encdata: 'SECRET-ENCDATA-VALUE',
+        checksum: 'SECRET-CHECKSUM',
+        client_secret: 'SECRET-CLIENT',
+        token: 'SECRET-TOKEN',
+        airpayResponseCode: '903',
+        status: 404,
+      });
+    } finally {
+      console.warn = original;
+    }
+
+    const emitted = lines.join('\n');
+
+    expect(emitted).not.toContain('SECRET-ENCDATA-VALUE');
+    expect(emitted).not.toContain('SECRET-CHECKSUM');
+    expect(emitted).not.toContain('SECRET-CLIENT');
+    expect(emitted).not.toContain('SECRET-TOKEN');
+
+    // Diagnostic fields must survive, or the log is useless.
+    expect(emitted).toContain('903');
+    expect(emitted).toContain('404');
+  });
+});
+
 describe('privateKey', () => {
   it('is sha256(secret@username:|:password)', async () => {
     const { privateKey } = await airpay();

@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 
 import { serverEnv } from './env.js';
 import { PublicError } from './http.js';
-import { errorMessage, log } from './log.js';
+import { errorMessage, log, type LogFields } from './log.js';
 
 /**
  * Airpay v4 protocol primitives — encryption, checksum, private key, OAuth.
@@ -270,7 +270,49 @@ let tokenCache: CachedToken | null = null;
 /** Refresh this far before nominal expiry, so a token cannot expire in flight. */
 const TOKEN_SAFETY_MARGIN_MS = 60_000;
 
-const HTTP_TIMEOUT_MS = 15_000;
+/**
+ * Must stay comfortably below the platform's function timeout.
+ *
+ * Vercel's default maximum duration is 10 seconds. At the previous 15s this
+ * abort could never fire first: a hung gateway got the whole function killed by
+ * the platform instead, which produces a bare 502 and — worse — no log at all,
+ * because the catch block never runs. Timing out at 8s guarantees the error is
+ * ours, handled, and recorded.
+ */
+const HTTP_TIMEOUT_MS = 8_000;
+
+/**
+ * Extracts Airpay's own status fields from a failed response, for logging.
+ *
+ * Only these four keys are ever read, and only when scalar. The raw body is
+ * never logged: an Airpay error can echo the submitted request, which would put
+ * `encdata` — and therefore the credentials inside it — into the log.
+ *
+ * This whitelist is what makes a failure diagnosable. `response_code` 903 means
+ * the credentials were rejected; a 404 with an HTML body means the endpoint path
+ * is wrong. Without it, both look like an identical bare 502.
+ */
+const describeFailure = (body: unknown): LogFields => {
+  const unwrapped = unwrapResponse(body);
+
+  if (typeof unwrapped !== 'object' || unwrapped === null) {
+    return { airpayBody: 'unparseable' };
+  }
+
+  const record = unwrapped as Record<string, unknown>;
+  const scalar = (key: string): string | undefined => {
+    const value = record[key];
+
+    return typeof value === 'string' || typeof value === 'number' ? String(value) : undefined;
+  };
+
+  return {
+    airpayStatusCode: scalar('status_code'),
+    airpayResponseCode: scalar('response_code'),
+    airpayStatus: scalar('status'),
+    airpayMessage: scalar('message'),
+  };
+};
 
 /** `fetch` with a hard timeout, so a hung gateway cannot hold the function open. */
 const fetchWithTimeout = async (url: string, init: RequestInit): Promise<Response> => {
@@ -335,8 +377,13 @@ export const getAccessToken = async (): Promise<string> => {
   }
 
   if (!response.ok) {
-    // Status only. The body can echo the request, credentials included.
-    log.error('airpay.oauth.http_error', { status: response.status });
+    const failure: unknown = await response.json().catch(() => null);
+
+    log.error('airpay.oauth.http_error', {
+      status: response.status,
+      url: OAUTH_URL,
+      ...describeFailure(failure),
+    });
 
     throw new PublicError(
       502,
@@ -354,7 +401,16 @@ export const getAccessToken = async (): Promise<string> => {
   if (token === null) {
     // Airpay error 903 is a credential mismatch — the first thing to suspect if
     // this fires is the AIRPAY_API_KEY → client_secret mapping.
-    log.error('airpay.oauth.no_token', { responseCode: readTokenField(parsed, 'response_code') });
+    //
+    // `envelopeDecrypted` distinguishes the two ways this can happen: a genuine
+    // rejection (decryption worked, Airpay simply returned no token) from a
+    // decryption failure (wrong AES key, so the response was never readable).
+    // They need opposite fixes and would otherwise look identical.
+    log.error('airpay.oauth.no_token', {
+      httpStatus: response.status,
+      envelopeDecrypted: parsed !== raw,
+      ...describeFailure(raw),
+    });
 
     throw new PublicError(
       502,
