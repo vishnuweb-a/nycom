@@ -29,6 +29,20 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
 
   await Promise.resolve();
 
+  /*
+   * Which commit is actually serving traffic.
+   *
+   * Vercel injects VERCEL_GIT_COMMIT_SHA when "Automatically expose System
+   * Environment Variables" is enabled. Without this, confirming whether a fix
+   * has reached production means correlating dashboard timestamps against log
+   * windows by hand — which has already produced two rounds of diagnosing a
+   * deployment that was not yet live.
+   *
+   * A short commit hash of a private repository is not sensitive, and being
+   * able to answer "is my fix deployed?" with one request is worth far more.
+   */
+  const commit = (process.env.VERCEL_GIT_COMMIT_SHA ?? 'unknown').slice(0, 7);
+
   let configured = false;
   let airpayEnv: string | null = null;
 
@@ -40,7 +54,7 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
     log.warn('health.env_incomplete', { detail: errorMessage(error) });
   }
 
-  sendJson(res, 200, { ok: true, configured, airpayEnv });
+  sendJson(res, 200, { ok: true, commit, configured, airpayEnv });
 };
 
 export default withErrorHandling('health', handler);
