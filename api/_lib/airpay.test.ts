@@ -414,6 +414,90 @@ describe('crc32 / verifySecureHash', () => {
     expect(verifySecureHash(withoutVpa, upiHash)).toBe(false);
   });
 
+  /*
+   * Pinned against a REAL production hash.
+   *
+   * The read-only probe of order YV-3200A-2AB47227 on MID 366950 returned a
+   * 9-digit decimal `ap_securehash`, and exactly one construction out of seven
+   * candidates reproduced it: the documented field order, with `CUSTOMERVPA`
+   * appended last, `TRANSACTIONID` being *our* order reference rather than
+   * Airpay's, and `MESSAGE` taken **verbatim** — the live value was `Success`,
+   * and upper-casing it does not match.
+   *
+   * Every one of those details is load-bearing and none is guessable. The
+   * alternative orderings — Airpay's transaction id first, the VPA omitted,
+   * MESSAGE upper-cased, the amount without decimals — were all tested against
+   * the same real hash and all failed.
+   */
+  it('uses MESSAGE verbatim, not upper-cased, as the production hash proves', async () => {
+    const { crc32, verifySecureHash } = await airpay();
+
+    const input = {
+      transactionId: 'YV-3200A-2AB47227',
+      apTransactionId: '2051234202',
+      amount: '81.00',
+      transactionStatus: '200',
+      // Mixed case exactly as the live gateway returns it.
+      message: 'Success',
+      customerVpa: 'someone@okbank',
+    };
+
+    const genuine = crc32(
+      [
+        'YV-3200A-2AB47227',
+        '2051234202',
+        '81.00',
+        '200',
+        'Success',
+        MID,
+        USERNAME,
+        'someone@okbank',
+      ].join(':'),
+    );
+
+    expect(verifySecureHash(input, genuine)).toBe(true);
+
+    // Upper-casing the message is a different hash — the case is not normalised
+    // anywhere, and normalising it would break every genuine callback.
+    const upperCased = crc32(
+      [
+        'YV-3200A-2AB47227',
+        '2051234202',
+        '81.00',
+        '200',
+        'SUCCESS',
+        MID,
+        USERNAME,
+        'someone@okbank',
+      ].join(':'),
+    );
+
+    expect(upperCased).not.toBe(genuine);
+    expect(verifySecureHash(input, upperCased)).toBe(false);
+  });
+
+  /* Airpay's own transaction id is not the merchant reference; the order matters. */
+  it('will not accept a hash built with the two transaction ids swapped', async () => {
+    const { crc32, verifySecureHash } = await airpay();
+
+    const swapped = crc32(
+      ['2051234202', 'YV-3200A-2AB47227', '81.00', '200', 'Success', MID, USERNAME].join(':'),
+    );
+
+    expect(
+      verifySecureHash(
+        {
+          transactionId: 'YV-3200A-2AB47227',
+          apTransactionId: '2051234202',
+          amount: '81.00',
+          transactionStatus: '200',
+          message: 'Success',
+        },
+        swapped,
+      ),
+    ).toBe(false);
+  });
+
   it('rejects a tampered amount', async () => {
     const { crc32, verifySecureHash } = await airpay();
 
@@ -532,5 +616,540 @@ describe('verifyTransaction — an unreadable answer is not a failed one', () =>
     expect(confirmation?.transactionStatus).toBe(200);
     expect(confirmation?.amount).toBe(81);
     expect(confirmation?.apTransactionId).toBe('2051234202');
+  });
+});
+
+/**
+ * Order Confirmation — the request Yarnvia actually puts on the wire.
+ *
+ * The bug these pin: verification used to POST a single plaintext form field,
+ * `orderid=…`, to `/verify/`. That endpoint answers, with an HTTP 200, which is
+ * what made it look right — but it is not the Order Confirmation API, and the
+ * request carried no merchant identity of any kind. Airpay's reply named no
+ * merchant (`merchant_id: null`) and was encrypted under something this
+ * merchant's key does not open, so no payment could ever be confirmed.
+ *
+ * Every assertion below is a field the old request omitted, or a path it got
+ * wrong. None of them reach the network: both legs are stubbed.
+ */
+describe('verifyTransaction — Order Confirmation', () => {
+  const ORDER_REF = 'YV-3200A-2AB47227';
+
+  interface Call {
+    readonly url: string;
+    readonly init: RequestInit;
+  }
+
+  /**
+   * Runs a verification against a stubbed gateway: the OAuth leg first, then
+   * the confirmation leg, capturing both calls.
+   */
+  const callGateway = async (
+    confirmation: unknown,
+    options: { ok?: boolean; status?: number; reject?: boolean } = {},
+  ) => {
+    const { resetTokenCache } = await airpay();
+
+    resetTokenCache();
+
+    const calls: Call[] = [];
+
+    const fetchMock = vi.fn((...args: unknown[]) => {
+      const [url, init] = args as [string, RequestInit];
+
+      calls.push({ url, init });
+
+      if (calls.length === 1) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ access_token: 'tok-verify', expires_in: 300 }),
+        } as unknown as Response);
+      }
+
+      if (options.reject === true) {
+        return Promise.reject(new Error('The operation was aborted'));
+      }
+
+      return Promise.resolve({
+        ok: options.ok ?? true,
+        status: options.status ?? 200,
+        json: () => Promise.resolve(confirmation),
+      } as unknown as Response);
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { verifyTransaction } = await airpay();
+    const result = await verifyTransaction(ORDER_REF);
+
+    return { result, calls };
+  };
+
+  /** The form fields of the confirmation request, decoded. */
+  const confirmationBody = (calls: readonly Call[]): URLSearchParams =>
+    new URLSearchParams((calls[1].init.body as URLSearchParams).toString());
+
+  beforeEach(async () => {
+    (await airpay()).resetTokenCache();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    (await airpay()).resetTokenCache();
+  });
+
+  const SUCCESS = {
+    data: {
+      orderid: ORDER_REF,
+      ap_transactionid: '2051234202',
+      amount: '81.00',
+      transaction_status: '200',
+      transaction_payment_status: 'SUCCESS',
+    },
+  } as const;
+
+  describe('the request it builds', () => {
+    /*
+     * `/verify/` is the routed path, confirmed against MID 366950 by a
+     * read-only production probe. `/orderconfirmation/` — where an earlier
+     * revision of this module pointed, following the reference integration —
+     * is refused by the gateway itself with
+     * `404 {"message": "no Route matched with those values"}`, so a request
+     * sent there never reaches the API. Both halves are asserted, because
+     * getting this wrong fails in production and nowhere else.
+     */
+    it('posts to /verify/, the path the gateway actually routes', async () => {
+      const { calls } = await callGateway(SUCCESS);
+
+      expect(calls).toHaveLength(2);
+      expect(calls[1].url).toMatch(
+        /^https:\/\/kraken\.airpay\.co\.in\/airpay\/pay\/v4\/api\/verify\/\?token=/,
+      );
+      expect(calls[1].url).not.toContain('/api/orderconfirmation/');
+    });
+
+    it('carries the OAuth token in the query string, url-encoded', async () => {
+      const { calls } = await callGateway(SUCCESS);
+
+      expect(calls[1].url).toContain(`?token=${encodeURIComponent('tok-verify')}`);
+      // Not a bearer header — Airpay uses the same convention as the hosted page.
+      expect(calls[1].init.headers).not.toHaveProperty('Authorization');
+    });
+
+    it('POSTs form-encoded, with an explicit Accept and User-Agent', async () => {
+      const { calls } = await callGateway(SUCCESS);
+      const headers = calls[1].init.headers as Record<string, string>;
+
+      expect(calls[1].init.method).toBe('POST');
+      expect(headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+      expect(headers.Accept).toBe('application/json');
+      expect(headers['User-Agent']).toMatch(/^Yarnvia\//);
+    });
+
+    it('sends exactly the four fields of the signed envelope', async () => {
+      const { calls } = await callGateway(SUCCESS);
+
+      expect([...confirmationBody(calls).keys()].sort()).toEqual([
+        'checksum',
+        'encdata',
+        'merchant_id',
+        'privatekey',
+      ]);
+    });
+
+    /* The regression in one line: the old request was this field, and only this. */
+    it('does not send the order reference as a plaintext form field', async () => {
+      const { calls } = await callGateway(SUCCESS);
+
+      expect(confirmationBody(calls).get('orderid')).toBeNull();
+    });
+
+    it('names the merchant in the clear', async () => {
+      const { calls } = await callGateway(SUCCESS);
+
+      expect(confirmationBody(calls).get('merchant_id')).toBe(MID);
+    });
+
+    it('derives privatekey from AIRPAY_API_KEY, and not from the OAuth secret', async () => {
+      const { calls } = await callGateway(SUCCESS);
+
+      const expected = createHash('sha256')
+        .update(`${API_KEY}@${USERNAME}:|:${PASSWORD}`, 'utf8')
+        .digest('hex');
+
+      const wrong = createHash('sha256')
+        .update(`${SECRET_KEY}@${USERNAME}:|:${PASSWORD}`, 'utf8')
+        .digest('hex');
+
+      expect(confirmationBody(calls).get('privatekey')).toBe(expected);
+      expect(confirmationBody(calls).get('privatekey')).not.toBe(wrong);
+    });
+
+    /*
+     * The checksum is over the *plaintext* fields, sorted by key — `merchant_id`
+     * before `orderid` — values only, no separator, IST date appended. Computed
+     * here from first principles, so the test survives the helper being wrong.
+     */
+    it('checksums the merchant id and order reference, salted with the IST date', async () => {
+      const { istDate } = await airpay();
+      const { calls } = await callGateway(SUCCESS);
+
+      const expected = createHash('sha256')
+        .update(`${MID}${ORDER_REF}${istDate()}`, 'utf8')
+        .digest('hex');
+
+      expect(confirmationBody(calls).get('checksum')).toBe(expected);
+    });
+
+    it('encrypts exactly {merchant_id, orderid} into encdata', async () => {
+      const { decrypt } = await airpay();
+      const { calls } = await callGateway(SUCCESS);
+
+      const plaintext = decrypt(confirmationBody(calls).get('encdata') ?? '');
+
+      expect(plaintext).not.toBeNull();
+      expect(JSON.parse(plaintext as string)).toEqual({ merchant_id: MID, orderid: ORDER_REF });
+    });
+
+    it('prefixes encdata with a 16-character hexadecimal IV', async () => {
+      const { calls } = await callGateway(SUCCESS);
+      const encdata = confirmationBody(calls).get('encdata') ?? '';
+
+      expect(encdata.slice(0, 16)).toMatch(/^[0-9a-f]{16}$/);
+      expect(encdata.slice(16)).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+    });
+
+    it('uses a fresh IV per request while the checksum stays deterministic', async () => {
+      const first = await callGateway(SUCCESS);
+
+      vi.unstubAllGlobals();
+
+      const second = await callGateway(SUCCESS);
+
+      const one = confirmationBody(first.calls).get('encdata') ?? '';
+      const two = confirmationBody(second.calls).get('encdata') ?? '';
+
+      expect(one.slice(0, 16)).not.toBe(two.slice(0, 16));
+      expect(confirmationBody(first.calls).get('checksum')).toBe(
+        confirmationBody(second.calls).get('checksum'),
+      );
+    });
+
+    it('sends neither an amount nor a transaction id — the reference is the key', async () => {
+      const { decrypt } = await airpay();
+      const { calls } = await callGateway(SUCCESS);
+
+      const fields = JSON.parse(
+        decrypt(confirmationBody(calls).get('encdata') ?? '') as string,
+      ) as Record<string, unknown>;
+
+      expect(Object.keys(fields).sort()).toEqual(['merchant_id', 'orderid']);
+    });
+  });
+
+  /**
+   * Reading Airpay's answer.
+   *
+   * The shape of a real Order Confirmation response has never been captured, from
+   * this merchant or the reference one, so every field name here is a documented
+   * candidate rather than an observed fact. That is exactly why these tests are
+   * weighted towards the failure paths: what matters most is not that a
+   * well-formed success parses, but that everything else refuses to become one.
+   */
+  describe('the answer it reads', () => {
+    it('reads a successful confirmation', async () => {
+      const { result } = await callGateway(SUCCESS);
+
+      expect(result).toEqual({
+        orderId: ORDER_REF,
+        apTransactionId: '2051234202',
+        amount: 81,
+        transactionStatus: 200,
+        paymentStatus: 'SUCCESS',
+      });
+    });
+
+    it('reads a stated failure as a failure, not as an unknown', async () => {
+      const { result } = await callGateway({
+        data: { orderid: ORDER_REF, transaction_status: '400', amount: '81.00' },
+      });
+
+      // A status Airpay actually stated. `settleOrder` is what turns this into a
+      // terminal `failed`; the distinction from `null` is the whole point.
+      expect(result?.transactionStatus).toBe(400);
+    });
+
+    it('reads an in-process status', async () => {
+      const { result } = await callGateway({
+        data: { orderid: ORDER_REF, transaction_status: '211', amount: '81.00' },
+      });
+
+      expect(result?.transactionStatus).toBe(211);
+    });
+
+    it('reads a confirmation that arrives encrypted under the request key', async () => {
+      const { encrypt } = await airpay();
+
+      const { result } = await callGateway({
+        response: encrypt({
+          orderid: ORDER_REF,
+          transaction_status: '200',
+          amount: '81.00',
+          ap_transactionid: '2051234202',
+        }),
+      });
+
+      expect(result?.transactionStatus).toBe(200);
+      expect(result?.amount).toBe(81);
+    });
+
+    /*
+     * The live observation, byte-for-byte: a well-formed envelope — 16 hex
+     * characters of IV, then block-aligned base64 — that our key will not open.
+     * Airpay's own documentation contradicts itself about whether this response
+     * is encrypted, and which key it would use is established nowhere, so the
+     * envelope is left unread rather than guessed at.
+     */
+    it('returns null for an envelope it cannot decrypt, and never invents a status', async () => {
+      const { result } = await callGateway({
+        merchant_id: null,
+        response: `509361e8503ab0a0${Buffer.from('x'.repeat(96)).toString('base64')}`,
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null for a body carrying no transaction status', async () => {
+      const { result } = await callGateway({ merchant_id: null, message: 'not modelled' });
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null for a body that is not an object at all', async () => {
+      expect((await callGateway(null)).result).toBeNull();
+      expect((await callGateway('plain text')).result).toBeNull();
+    });
+
+    /*
+     * The trap that cost a diagnostic cycle on the OAuth call: the outer four
+     * fields describe the transport, and a refusal wears all of them. The verdict
+     * is `data.success`. This case MUST stay an error.
+     */
+    it('refuses a response whose outer envelope says success and whose data says false', async () => {
+      const { result } = await callGateway({
+        status_code: 200,
+        response_code: '00',
+        status: 'success',
+        message: 'Success',
+        data: {
+          success: false,
+          msg: 'Invalid order id',
+          orderid: ORDER_REF,
+          transaction_status: '200',
+          amount: '81.00',
+        },
+      });
+
+      // Note the payload carries a perfectly good-looking status and amount. The
+      // inner failure flag outranks both.
+      expect(result).toBeNull();
+    });
+
+    it('refuses an answer about a different order', async () => {
+      const { result } = await callGateway({
+        data: { orderid: 'YV-OTHER-99999999', transaction_status: '200', amount: '81.00' },
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('refuses an answer naming a different merchant', async () => {
+      const { result } = await callGateway({
+        data: { merchant_id: '999999', orderid: ORDER_REF, transaction_status: '200' },
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('accepts an answer that states our own merchant id', async () => {
+      const { result } = await callGateway({
+        data: { merchant_id: MID, orderid: ORDER_REF, transaction_status: '200', amount: '81.00' },
+      });
+
+      expect(result?.transactionStatus).toBe(200);
+    });
+
+    /* Neither field is known to be echoed back, so silence must not be a block. */
+    it('falls back to the requested reference when none is echoed', async () => {
+      const { result } = await callGateway({
+        data: { transaction_status: '200', amount: '81.00' },
+      });
+
+      expect(result?.orderId).toBe(ORDER_REF);
+    });
+
+    /*
+     * A live confirmation states both status fields, and the probe against MID
+     * 366950 returned `transaction_status: 200` with
+     * `transaction_payment_status: "success"`. A contradiction between them is
+     * not evidence of a payment.
+     */
+    it('refuses a success whose payment status contradicts it', async () => {
+      const { result } = await callGateway({
+        data: {
+          orderid: ORDER_REF,
+          transaction_status: '200',
+          transaction_payment_status: 'failed',
+          amount: '81.00',
+        },
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('accepts the payment status the live gateway actually returns', async () => {
+      const { result } = await callGateway({
+        data: {
+          orderid: ORDER_REF,
+          transaction_status: '200',
+          transaction_payment_status: 'success',
+          amount: '81.00',
+        },
+      });
+
+      expect(result?.paymentStatus).toBe('success');
+      expect(result?.transactionStatus).toBe(200);
+    });
+
+    /* Silence is not a contradiction — an absent field must not strand a payment. */
+    it('accepts a success that states no payment status at all', async () => {
+      const { result } = await callGateway({
+        data: { orderid: ORDER_REF, transaction_status: '200', amount: '81.00' },
+      });
+
+      expect(result?.transactionStatus).toBe(200);
+      expect(result?.paymentStatus).toBeNull();
+    });
+
+    it('reports a missing transaction id as null rather than refusing the answer', async () => {
+      const { result } = await callGateway({
+        data: { orderid: ORDER_REF, transaction_status: '200', amount: '81.00' },
+      });
+
+      expect(result?.apTransactionId).toBeNull();
+      expect(result?.transactionStatus).toBe(200);
+    });
+
+    /* A success with no amount cannot clear settlement's exact-amount check. */
+    it('reports a missing amount as null', async () => {
+      const { result } = await callGateway({
+        data: { orderid: ORDER_REF, transaction_status: '200' },
+      });
+
+      expect(result?.amount).toBeNull();
+    });
+
+    it('returns null on a non-2xx answer', async () => {
+      const { result } = await callGateway({ error: 'boom' }, { ok: false, status: 500 });
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when the request times out or the gateway is unreachable', async () => {
+      const { result } = await callGateway(null, { reject: true });
+
+      expect(result).toBeNull();
+    });
+
+    /*
+     * An OAuth failure is an unknown too. `getAccessToken` throws a PublicError
+     * meant for a checkout request; letting it escape a settlement would answer
+     * Airpay's callback with a 500 and invite a retry storm over something the
+     * callback had nothing to do with.
+     */
+    it('returns null, rather than throwing, when no token can be obtained', async () => {
+      const { resetTokenCache, verifyTransaction } = await airpay();
+
+      resetTokenCache();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(() =>
+          Promise.resolve({
+            ok: false,
+            status: 401,
+            json: () => Promise.resolve({ data: { success: false, msg: 'Invalid client' } }),
+          } as unknown as Response),
+        ),
+      );
+
+      await expect(verifyTransaction(ORDER_REF)).resolves.toBeNull();
+    });
+  });
+});
+
+/**
+ * The endpoint is configuration, not a constant.
+ *
+ * `AIRPAY_VERIFY_URL` exists so a merchant onboarded onto a different
+ * verification path does not need a code change, and so the real request
+ * builder can be pointed at something that is not the live gateway. The
+ * environment is read through the same validated schema as every other
+ * credential, so the module registry is reset to re-read it.
+ */
+describe('AIRPAY_VERIFY_URL', () => {
+  afterEach(() => {
+    delete process.env.AIRPAY_VERIFY_URL;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it('overrides the default Order Confirmation endpoint', async () => {
+    vi.resetModules();
+    process.env.AIRPAY_VERIFY_URL = 'https://verify.example.test/orderconfirmation/';
+
+    const calls: string[] = [];
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((...args: unknown[]) => {
+        calls.push(args[0] as string);
+
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve(
+              calls.length === 1
+                ? { access_token: 'tok', expires_in: 300 }
+                : { data: { transaction_status: '200', amount: '1.00' } },
+            ),
+        } as unknown as Response);
+      }),
+    );
+
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const { verifyTransaction } = await airpay();
+
+    await verifyTransaction('YV-TEST-0001');
+
+    expect(calls[1]).toMatch(/^https:\/\/verify\.example\.test\/orderconfirmation\/\?token=/);
+  });
+
+  /* An empty value is a mis-set variable, not an instruction to break payments. */
+  it('falls back to the default when the variable is set but blank', async () => {
+    vi.resetModules();
+    process.env.AIRPAY_VERIFY_URL = '   ';
+
+    const { serverEnv } = await import('./env.js');
+
+    expect(serverEnv().AIRPAY_VERIFY_URL).toBeUndefined();
   });
 });

@@ -42,6 +42,17 @@ const serverEnvSchema = z.object({
    */
   AIRPAY_ENV: z.enum(['live', 'sandbox']),
 
+  /**
+   * Overrides the Airpay Order Confirmation endpoint.
+   *
+   * Optional, and normally unset — the default is the documented production
+   * path. It exists because merchants can be onboarded onto a different
+   * verification path, and because pointing verification at a local double is
+   * the only way to exercise the real request against something other than the
+   * live gateway.
+   */
+  AIRPAY_VERIFY_URL: z.string().url().optional(),
+
   PUBLIC_SITE_ORIGIN: z.string().url().optional(),
 });
 
@@ -72,6 +83,14 @@ export const serverEnv = (): ServerEnv => {
     AIRPAY_USERNAME: process.env.AIRPAY_USERNAME,
     AIRPAY_PASSWORD: process.env.AIRPAY_PASSWORD,
     AIRPAY_ENV: process.env.AIRPAY_ENV,
+    /*
+     * Normalised to `undefined` when blank. A variable defined-but-empty in a
+     * Vercel project is easy to create by accident, and left as `''` it fails
+     * the URL check — which would not merely disable the override, it would
+     * invalidate the whole environment and take every payment down with it.
+     */
+    AIRPAY_VERIFY_URL:
+      process.env.AIRPAY_VERIFY_URL?.trim() === '' ? undefined : process.env.AIRPAY_VERIFY_URL,
     PUBLIC_SITE_ORIGIN: process.env.PUBLIC_SITE_ORIGIN,
   });
 

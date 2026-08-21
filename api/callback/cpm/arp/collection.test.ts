@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -563,5 +565,47 @@ describe('the public and internal routes share one settlement', () => {
     expect(rows[0]?.payment_status).toBe('paid');
     expect(viaPublic.body).toEqual({ received: true, outcome: 'paid' });
     expect(viaInternal.body).toEqual({ received: true, outcome: 'already_settled' });
+  });
+});
+
+/**
+ * The routing that carries the public callback URL.
+ *
+ * This is not incidental: the original production failure was exactly this.
+ * `/callback/cpm/arp/collection` fell through to the SPA catch-all and was
+ * served by the static file server — a GET returned `index.html` and Airpay's
+ * POST was answered `405` with an empty body — so nothing Airpay sent ever
+ * reached a handler, and order YV-3200A-2AB47227 sat at `initiated`.
+ *
+ * The handler being correct is not enough if the request never arrives, and
+ * rewrite ORDER is what decides that: Vercel takes the first match, so the two
+ * callback rules must precede the catch-all. Reordering them would silently
+ * restore the outage, which is why it is pinned here rather than left to
+ * review.
+ */
+describe('vercel.json routes the public callback to this function', () => {
+  const config = JSON.parse(
+    readFileSync(new URL('../../../../vercel.json', import.meta.url), 'utf8'),
+  ) as { rewrites: { source: string; destination: string }[] };
+
+  const DESTINATION = '/api/callback/cpm/arp/collection';
+  const CATCH_ALL = config.rewrites.findIndex((rule) => rule.destination === '/index.html');
+
+  it.each(['/callback/cpm/arp/collection', '/callback/cpm/arp/collection/'])(
+    'rewrites %s to the function, ahead of the SPA catch-all',
+    (source) => {
+      const index = config.rewrites.findIndex((rule) => rule.source === source);
+
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(config.rewrites[index].destination).toBe(DESTINATION);
+      expect(index).toBeLessThan(CATCH_ALL);
+    },
+  );
+
+  it('keeps an SPA catch-all that excludes the api namespace', () => {
+    expect(CATCH_ALL).toBeGreaterThanOrEqual(0);
+    // Without the negative lookahead the catch-all would swallow every
+    // function route, not just this one.
+    expect(config.rewrites[CATCH_ALL].source).toContain('(?!api/)');
   });
 });

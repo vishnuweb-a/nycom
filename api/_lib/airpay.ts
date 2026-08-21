@@ -38,8 +38,34 @@ export const PAYMENT_ACTION_URL = 'https://payments.airpay.co.in/pay/v4/';
  */
 const OAUTH_URL = `${KRAKEN_BASE}/oauth2/`;
 
-/** Order Confirmation. Live MID only — see `verifyTransaction`. */
-const ORDER_CONFIRMATION_URL = `${KRAKEN_BASE}/verify/`;
+/**
+ * Order Confirmation — the verification call. Live MID only; see
+ * `verifyTransaction`.
+ *
+ * `/verify/` is the routed path for MID 366950, confirmed by a read-only
+ * production probe on 2026-08-21: HTTP 200, a response that decrypts with the
+ * ordinary request key, and an order reference, amount and transaction id that
+ * all matched. `/orderconfirmation/` — the path the reference integration
+ * defaults to — is answered by the gateway itself with
+ * `404 {"message": "no Route matched with those values"}`, so a request sent
+ * there never reaches the API at all.
+ *
+ * What was actually wrong before was the *body*, not the path. The old request
+ * posted a bare `orderid=…` form field with no merchant identity, and Airpay
+ * replied `{"merchant_id": null, "response": "<envelope>"}` — an answer it
+ * could not attribute to this merchant, encrypted under something this key
+ * does not open. Sending the signed envelope to the same URL returns a
+ * readable confirmation, which is what proved the two problems were separable.
+ *
+ * Overridable because merchants can be onboarded onto a different verification
+ * path — and because pointing this at a local double is the only way to
+ * exercise the real request builder without touching the live gateway.
+ */
+const verifyUrl = (): string => {
+  const configured = serverEnv().AIRPAY_VERIFY_URL;
+
+  return configured === undefined ? `${KRAKEN_BASE}/verify/` : configured.trim();
+};
 
 // ─── Dates ──────────────────────────────────────────────────────────────────
 
@@ -194,6 +220,43 @@ export const checksum = (
   return sha256Hex(concatenated + date);
 };
 
+// ─── Request envelopes ──────────────────────────────────────────────────────
+
+/** The form fields an Airpay v4 request is made of. */
+export type AirpayEnvelope = Readonly<Record<string, string>>;
+
+/**
+ * The envelope Airpay's OAuth2 endpoint takes: the merchant id in the clear,
+ * the fields encrypted, and a checksum over their *plaintext*.
+ *
+ * `privatekey` is deliberately absent. It belongs to the token-authenticated
+ * transactional APIs; sending it on the token request is a documented way to
+ * have that request refused.
+ */
+export const buildEnvelope = (
+  payload: Readonly<Record<string, string | number>>,
+): AirpayEnvelope => ({
+  merchant_id: serverEnv().AIRPAY_MID,
+  encdata: encrypt(payload),
+  checksum: checksum(payload),
+});
+
+/**
+ * The envelope every token-authenticated transactional API takes — the OAuth
+ * one, plus the `privatekey` from which Airpay resolves *which* merchant is
+ * asking.
+ *
+ * Omitting it is precisely what the old `/verify/` request did, and Airpay
+ * answering with `merchant_id: null` is consistent with a gateway that had no
+ * merchant to resolve.
+ */
+export const buildSignedEnvelope = (
+  payload: Readonly<Record<string, string | number>>,
+): AirpayEnvelope => ({
+  ...buildEnvelope(payload),
+  privatekey: privateKey(),
+});
+
 // ─── ap_SecureHash (CRC32) ──────────────────────────────────────────────────
 
 const CRC32_TABLE: readonly number[] = (() => {
@@ -237,6 +300,14 @@ export interface SecureHashInput {
 
 /**
  * Recomputes `ap_SecureHash` and compares it to the value Airpay sent.
+ *
+ * The construction below is PROVEN, not transcribed-and-hoped. A read-only
+ * probe of order YV-3200A-2AB47227 on MID 366950 returned a real 9-digit
+ * decimal hash, and of seven candidate constructions exactly one reproduced
+ * it: this field order, with `CUSTOMERVPA` appended last, `transactionId`
+ * being the *merchant's* reference rather than Airpay's, and `message` used
+ * verbatim — the live value is `Success`, and upper-casing it does not match.
+ * Do not normalise the case, reorder the fields, or drop the VPA.
  *
  * ⚠ This is an integrity check, not authentication. CRC32 is unkeyed, and every
  * input is either public or known to anyone holding the merchant ID and
@@ -413,11 +484,7 @@ export const getAccessToken = async (): Promise<string> => {
     grant_type: 'client_credentials',
   } as const;
 
-  const body = new URLSearchParams({
-    merchant_id: env.AIRPAY_MID,
-    encdata: encrypt(payload),
-    checksum: checksum(payload),
-  });
+  const body = new URLSearchParams(buildEnvelope(payload));
 
   let response: Response;
 
@@ -495,6 +562,21 @@ export const getAccessToken = async (): Promise<string> => {
   return token;
 };
 
+/** Whether a v4 response carried an encrypted envelope, and how it went. */
+type EnvelopeState =
+  /** No envelope — Airpay answered in plaintext. */
+  | 'absent'
+  /** An envelope that opened, and whose plaintext parsed as JSON. */
+  | 'decrypted'
+  /** An envelope that our key would not open, or whose plaintext was not JSON. */
+  | 'unreadable';
+
+interface Unwrapped {
+  /** The plaintext body, or the untouched original when there was none. */
+  readonly value: unknown;
+  readonly envelope: EnvelopeState;
+}
+
 /**
  * Unwraps an Airpay v4 response body.
  *
@@ -511,31 +593,39 @@ export const getAccessToken = async (): Promise<string> => {
  *       data: { access_token, expires_in, scope } }
  *
  * Returns the plaintext object either way, or the original value when there is
- * no envelope to unwrap.
+ * no envelope to unwrap — together with which of those three things happened,
+ * because "Airpay sent nothing we recognise" and "Airpay sent something we
+ * cannot decrypt" need opposite fixes and are indistinguishable from the body
+ * alone.
  */
-const unwrapResponse = (body: unknown): unknown => {
+const unwrapEnvelope = (body: unknown): Unwrapped => {
   if (typeof body !== 'object' || body === null) {
-    return body;
+    return { value: body, envelope: 'absent' };
   }
 
   const envelope = (body as Record<string, unknown>).response;
 
   if (typeof envelope !== 'string' || envelope === '') {
-    return body;
+    return { value: body, envelope: 'absent' };
   }
 
   const plaintext = decrypt(envelope);
 
   if (plaintext === null) {
-    return body;
+    // Well-formed but not ours to read. The body is kept exactly as it arrived
+    // — never partially reconstructed — and the caller reports "no answer".
+    return { value: body, envelope: 'unreadable' };
   }
 
   try {
-    return JSON.parse(plaintext);
+    return { value: JSON.parse(plaintext), envelope: 'decrypted' };
   } catch {
-    return body;
+    return { value: body, envelope: 'unreadable' };
   }
 };
+
+/** The same unwrapping, for callers that only want the body. */
+const unwrapResponse = (body: unknown): unknown => unwrapEnvelope(body).value;
 
 /** Bounds the search below, so a cyclic or pathological body cannot hang it. */
 const MAX_SEARCH_DEPTH = 6;
@@ -688,6 +778,57 @@ export interface TransactionConfirmation {
 }
 
 /**
+ * Headers for the Order Confirmation call.
+ *
+ * `Content-Type` is the load-bearing one. Airpay reads the envelope as POST
+ * form fields, and a JSON body comes back as "403 Forbidden: Access is denied.
+ * Parameters are required" — every field present, and not one of them visible
+ * to the server.
+ *
+ * The explicit `User-Agent` is defensive: Node's `fetch` sends none, and a WAF
+ * that refuses an anonymous client answers before the request ever reaches the
+ * API, which is indistinguishable from a credential error. The OAuth call
+ * keeps its existing headers deliberately — it works against the live gateway
+ * today, and changing a request that works while fixing one that does not
+ * makes the result uninterpretable.
+ */
+const VERIFY_HEADERS = {
+  'Content-Type': 'application/x-www-form-urlencoded',
+  Accept: 'application/json',
+  'User-Agent': 'Yarnvia/1.0 (+https://www.yarnvia.online)',
+} as const;
+
+/**
+ * Detects the failure Airpay reports as an apparent success.
+ *
+ * A refusal still arrives as `status_code: 200, response_code: "00",
+ * status: "success", message: "Success"`. Those four describe the *transport*.
+ * The verdict is `data.success`, with the reason in `data.msg`, and reading
+ * only the outer envelope on the OAuth call once cost a full diagnostic cycle.
+ *
+ * Checked before any field of a confirmation is believed. The gate can only
+ * ever move an order away from `paid`, which is the safe direction to be wrong
+ * in for a response shape nobody has yet read.
+ */
+const hasInnerFailure = (body: unknown): boolean => {
+  if (typeof body !== 'object' || body === null) {
+    return false;
+  }
+
+  const record = body as Record<string, unknown>;
+  const nested = record.data;
+
+  const containers: readonly Record<string, unknown>[] = [
+    record,
+    typeof nested === 'object' && nested !== null ? (nested as Record<string, unknown>) : {},
+  ];
+
+  return containers.some(
+    ({ success }) => success === false || success === 'false' || success === 0 || success === '0',
+  );
+};
+
+/**
  * Calls Airpay's Order Confirmation API — the only trustworthy answer to
  * "was this actually paid?".
  *
@@ -696,8 +837,17 @@ export interface TransactionConfirmation {
  * server-to-server request authenticated by an OAuth token, and it is the sole
  * basis on which an order may be marked paid.
  *
+ * The request is the signed envelope every v4 transactional API takes —
+ * `merchant_id`, `encdata`, `checksum`, `privatekey` — form-encoded, with the
+ * token in the query string. The earlier version posted a bare `orderid=…`
+ * form field to `/verify/`, which is not this API, carried no merchant
+ * identity at all, and produced an answer nothing could read.
+ *
  * Returns `null` when the answer cannot be obtained, which callers must treat
- * as "not paid yet" rather than as a failure to report to the customer.
+ * as "not paid yet" rather than as a failure to report to the customer. Every
+ * inconclusive path below returns exactly that — unreachable gateway, non-2xx,
+ * unreadable envelope, inner failure, an answer about some other order, or an
+ * answer carrying no status. It never throws.
  *
  * ⚠ Documented constraint: "This API will work only on live MID, for the
  * sandbox MID this API will not work." The caller is responsible for gating on
@@ -706,19 +856,43 @@ export interface TransactionConfirmation {
 export const verifyTransaction = async (
   orderRef: string,
 ): Promise<TransactionConfirmation | null> => {
-  const token = await getAccessToken();
+  const env = serverEnv();
+
+  let token: string;
+
+  try {
+    token = await getAccessToken();
+  } catch (error) {
+    /*
+     * No token, no verification — and that is an unknown, not a failed
+     * payment. `getAccessToken` throws a `PublicError` written for a checkout
+     * request; letting it escape from here would turn a settlement into a 500
+     * and invite Airpay to retry a callback that was never the problem.
+     */
+    log.error('airpay.verify.no_token', { orderRef, reason: errorMessage(error) });
+
+    return null;
+  }
 
   let response: Response;
 
   try {
-    response = await fetchWithTimeout(
-      `${ORDER_CONFIRMATION_URL}?token=${encodeURIComponent(token)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ orderid: orderRef }),
-      },
-    );
+    response = await fetchWithTimeout(`${verifyUrl()}?token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: VERIFY_HEADERS,
+      /*
+       * `merchant_id` travels twice — once in the clear so the gateway can
+       * route the request, and once inside `encdata`, where the checksum
+       * commits to it.
+       *
+       * Verification is keyed on our own order reference and nothing else: no
+       * amount, no Airpay transaction id. That is exactly what lets the
+       * reconciliation sweep verify an order whose callback never arrived.
+       */
+      body: new URLSearchParams(
+        buildSignedEnvelope({ merchant_id: env.AIRPAY_MID, orderid: orderRef }),
+      ),
+    });
   } catch (error) {
     log.error('airpay.verify.unreachable', { orderRef, reason: errorMessage(error) });
 
@@ -732,13 +906,20 @@ export const verifyTransaction = async (
   }
 
   // The Order Confirmation page says this response is not encrypted; the
-  // Decryption page says every response is. `unwrapResponse` handles both, so
-  // the contradiction cannot break verification either way.
+  // Decryption page says every response is. `unwrapEnvelope` handles both, and
+  // reports which one it met, so an envelope we cannot open is never mistaken
+  // for a body we simply did not recognise.
   const raw: unknown = await response.json().catch(() => null);
-  const body: unknown = unwrapResponse(raw);
+  const { value: body, envelope } = unwrapEnvelope(raw);
 
   if (typeof body !== 'object' || body === null) {
-    log.error('airpay.verify.unparseable', { orderRef });
+    log.error('airpay.verify.unparseable', { orderRef, envelope });
+
+    return null;
+  }
+
+  if (hasInnerFailure(body)) {
+    log.error('airpay.verify.inner_failure', { orderRef, envelope, ...describeFailure(body) });
 
     return null;
   }
@@ -758,6 +939,31 @@ export const verifyTransaction = async (
   const text = (value: unknown): string | null =>
     typeof value === 'string' || typeof value === 'number' ? String(value) : null;
 
+  /*
+   * Two cross-checks, both fail-closed.
+   *
+   * We asked about one order at one merchant, and an answer naming a different
+   * one is not evidence about this payment, whatever status it carries. Airpay
+   * is not known to echo either field back, so each is checked only when
+   * actually stated: silence is not a mismatch, and a mismatch is never
+   * settled.
+   */
+  const statedOrderId = text(data.orderid ?? data.ORDERID ?? record.orderid);
+
+  if (statedOrderId !== null && statedOrderId.trim() !== orderRef) {
+    log.error('airpay.verify.order_mismatch', { orderRef, envelope });
+
+    return null;
+  }
+
+  const statedMid = text(data.merchant_id ?? data.MERCID ?? record.merchant_id);
+
+  if (statedMid !== null && statedMid.trim() !== env.AIRPAY_MID) {
+    log.error('airpay.verify.merchant_mismatch', { orderRef, envelope });
+
+    return null;
+  }
+
   const transactionStatus = numeric(data.transaction_status ?? data.TRANSACTIONSTATUS);
 
   /*
@@ -775,34 +981,64 @@ export const verifyTransaction = async (
    * and callers already treat it as "not paid yet, ask again later". An
    * unreadable body belongs in that bucket, alongside a timeout and a 500.
    *
-   * ⚠ The live cause, confirmed against MID 366950 on 2026-08-21: Order
-   * Confirmation replies `{"merchant_id": null, "response": "<encrypted>"}`,
-   * and `unwrapResponse` cannot decrypt that envelope with the AES key that
-   * every *outbound* call uses — `md5(USERNAME~:~PASSWORD)` as ASCII. The
-   * envelope itself is well formed (16 hex-character IV prefix, then 96
-   * ciphertext bytes, block-aligned), so the format is understood and only the
-   * key is wrong. Which key Airpay encrypts *responses* with is a question for
-   * Airpay integration support; until it is answered, verification cannot
-   * conclude and orders correctly stay unsettled rather than being failed.
+   * ⚠ The decrypted shape of this endpoint's answer has still never been read.
+   * The request is now the one Airpay documents, but which key it encrypts a
+   * *response* under is established nowhere — not by Airpay's documentation,
+   * which contradicts itself about whether this response is encrypted at all,
+   * and not by the reference integration, which tries the request key and
+   * falls back to the raw body when that fails. So the field names below
+   * remain documented candidates rather than observed ones, and `envelope`
+   * says which of the two possible problems is in play: `unreadable` is a key
+   * we do not hold, while `absent` or `decrypted` with no status is a field
+   * name we did not expect. They need opposite fixes and look identical from
+   * the outside.
    */
   if (transactionStatus === null) {
-    log.error('airpay.verify.no_status', {
-      orderRef,
-      // Whether `unwrapResponse` managed to open the envelope. This is the
-      // field that says whether the problem is decryption or field naming —
-      // they need opposite fixes and look identical from the outside.
-      envelopeDecrypted: body !== raw,
-      shape: describeShape(body),
-    });
+    log.error('airpay.verify.no_status', { orderRef, envelope, shape: describeShape(body) });
+
+    return null;
+  }
+
+  const apTransactionId = text(data.ap_transactionid ?? data.APTRANSACTIONID);
+
+  if (transactionStatus === AIRPAY_STATUS.SUCCESS && apTransactionId === null) {
+    // Not fatal: Airpay has confirmed the payment and the amount check is what
+    // stands between here and `paid`. But without Airpay's own id the row
+    // cannot be reconciled against their dashboard, so it is worth a line.
+    log.warn('airpay.verify.no_transaction_id', { orderRef, envelope });
+  }
+
+  const paymentStatus = text(data.transaction_payment_status ?? data.TRANSACTIONPAYMENTSTATUS);
+
+  /*
+   * The two status fields must agree.
+   *
+   * A live confirmation states both — `transaction_status: 200` alongside
+   * `transaction_payment_status: "success"` — and settlement keys on the
+   * numeric one. If they ever disagree, the answer is not evidence of a
+   * payment, and treating a contradiction as "unknown" leaves the order open
+   * for a human rather than paying it out on the half we happened to read.
+   *
+   * Deliberately narrow: it fires only when Airpay states a *success* and then
+   * contradicts it. An absent field is silence, not a contradiction, and any
+   * value beginning "success" is accepted, so a wording change at Airpay's end
+   * cannot strand a genuine payment.
+   */
+  if (
+    transactionStatus === AIRPAY_STATUS.SUCCESS &&
+    paymentStatus !== null &&
+    !/^success/i.test(paymentStatus.trim())
+  ) {
+    log.error('airpay.verify.status_conflict', { orderRef, envelope, paymentStatus });
 
     return null;
   }
 
   return {
-    orderId: text(data.orderid ?? data.ORDERID) ?? orderRef,
-    apTransactionId: text(data.ap_transactionid ?? data.APTRANSACTIONID),
+    orderId: statedOrderId ?? orderRef,
+    apTransactionId,
     amount: numeric(data.amount ?? data.AMOUNT),
     transactionStatus,
-    paymentStatus: text(data.transaction_payment_status ?? data.TRANSACTIONPAYMENTSTATUS),
+    paymentStatus,
   };
 };
