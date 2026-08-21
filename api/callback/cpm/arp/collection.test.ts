@@ -338,6 +338,23 @@ describe('POST /callback/cpm/arp/collection — settlement outcomes', () => {
     expect(captured.body).toEqual({ received: true, outcome: 'amount_mismatch' });
   });
 
+  /*
+   * The regression this route surfaced on its first real callback. Airpay
+   * answered with an envelope the code could not decrypt, so the confirmation
+   * carried no transaction status — and `null !== 200` sent the order straight
+   * into `failed`. A ₹81 payment that Airpay's dashboard shows as successful
+   * was terminally marked failed by it.
+   */
+  it('leaves the order alone when the gateway answer is unreadable', async () => {
+    gatewaySays = { transactionStatus: null, amount: null };
+
+    const captured = await post({ body: { ...CALLBACK } });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(captured.body).toEqual({ received: true, outcome: 'pending' });
+  });
+
   it('changes nothing for an unknown order reference', async () => {
     const captured = await post({ body: { ...CALLBACK, TRANSACTIONID: 'YV-NOPE-00000000' } });
 

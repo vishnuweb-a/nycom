@@ -167,6 +167,25 @@ export const settleOrder = async (payload: CallbackPayload): Promise<SettlementR
     return { outcome: 'pending', orderRef, paymentStatus: order.payment_status };
   }
 
+  /*
+   * No status is an unknown, not a failure.
+   *
+   * `verifyTransaction` now refuses to return a statusless confirmation, so
+   * this should be unreachable — it stays as the second lock on the same door.
+   * The comparison below is `status !== SUCCESS`, and `null !== 200`, so a
+   * missing status previously fell straight through into `failed` and marked
+   * the order terminally, unrecoverably, wrong. That is exactly what happened
+   * to order YV-3200A-2AB47227, a genuine ₹81 payment.
+   *
+   * Refusing to mark an order paid without proof and refusing to mark it failed
+   * without proof are the same discipline. Only one of them was implemented.
+   */
+  if (status === null) {
+    log.error('payment.verify.no_status', { orderRef });
+
+    return { outcome: 'pending', orderRef, paymentStatus: order.payment_status };
+  }
+
   if (status !== AIRPAY_STATUS.SUCCESS) {
     const outcome = await transition(orderRef, 'failed', confirmation.apTransactionId);
 

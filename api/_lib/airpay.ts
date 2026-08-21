@@ -734,7 +734,8 @@ export const verifyTransaction = async (
   // The Order Confirmation page says this response is not encrypted; the
   // Decryption page says every response is. `unwrapResponse` handles both, so
   // the contradiction cannot break verification either way.
-  const body: unknown = unwrapResponse(await response.json().catch(() => null));
+  const raw: unknown = await response.json().catch(() => null);
+  const body: unknown = unwrapResponse(raw);
 
   if (typeof body !== 'object' || body === null) {
     log.error('airpay.verify.unparseable', { orderRef });
@@ -757,11 +758,51 @@ export const verifyTransaction = async (
   const text = (value: unknown): string | null =>
     typeof value === 'string' || typeof value === 'number' ? String(value) : null;
 
+  const transactionStatus = numeric(data.transaction_status ?? data.TRANSACTIONSTATUS);
+
+  /*
+   * No status field means Airpay did not answer the question — NOT that the
+   * answer was "failed".
+   *
+   * This distinction is worth real money. Returning a confirmation whose every
+   * field is `null` looked harmless, but `settle.ts` compares the status
+   * against SUCCESS, and `null !== 200`, so a response we simply could not read
+   * was recorded as a definitive failure and the order was terminally marked
+   * `failed`. Order YV-3200A-2AB47227 — a genuine ₹81 UPI payment that Airpay's
+   * own dashboard shows as successful — was failed that way.
+   *
+   * `null` is this function's documented "could not obtain an answer" signal,
+   * and callers already treat it as "not paid yet, ask again later". An
+   * unreadable body belongs in that bucket, alongside a timeout and a 500.
+   *
+   * ⚠ The live cause, confirmed against MID 366950 on 2026-08-21: Order
+   * Confirmation replies `{"merchant_id": null, "response": "<encrypted>"}`,
+   * and `unwrapResponse` cannot decrypt that envelope with the AES key that
+   * every *outbound* call uses — `md5(USERNAME~:~PASSWORD)` as ASCII. The
+   * envelope itself is well formed (16 hex-character IV prefix, then 96
+   * ciphertext bytes, block-aligned), so the format is understood and only the
+   * key is wrong. Which key Airpay encrypts *responses* with is a question for
+   * Airpay integration support; until it is answered, verification cannot
+   * conclude and orders correctly stay unsettled rather than being failed.
+   */
+  if (transactionStatus === null) {
+    log.error('airpay.verify.no_status', {
+      orderRef,
+      // Whether `unwrapResponse` managed to open the envelope. This is the
+      // field that says whether the problem is decryption or field naming —
+      // they need opposite fixes and look identical from the outside.
+      envelopeDecrypted: body !== raw,
+      shape: describeShape(body),
+    });
+
+    return null;
+  }
+
   return {
     orderId: text(data.orderid ?? data.ORDERID) ?? orderRef,
     apTransactionId: text(data.ap_transactionid ?? data.APTRANSACTIONID),
     amount: numeric(data.amount ?? data.AMOUNT),
-    transactionStatus: numeric(data.transaction_status ?? data.TRANSACTIONSTATUS),
+    transactionStatus,
     paymentStatus: text(data.transaction_payment_status ?? data.TRANSACTIONPAYMENTSTATUS),
   };
 };

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Protocol-level tests for the Airpay primitives.
@@ -446,5 +446,91 @@ describe('crc32 / verifySecureHash', () => {
     const hash = crc32(['YV-TEST-0004', 'AP2', '5.00', '400', 'FAIL', MID, USERNAME].join(':'));
 
     expect(verifySecureHash(input, `  ${hash}\n`)).toBe(true);
+  });
+});
+
+/**
+ * Order Confirmation — what happens when the gateway's answer is unreadable.
+ *
+ * This is the regression that cost a real payment. Against MID 366950 the live
+ * `/verify/` endpoint replies `{"merchant_id": null, "response": "<encrypted>"}`
+ * and the envelope does not open with the AES key every outbound call uses. The
+ * parser then found no transaction status, reported one anyway as `null`, and
+ * `settle.ts` read `null !== 200` as a definitive failure.
+ *
+ * `null` from this function means "no answer". A body we cannot read is exactly
+ * that, and must not be dressed up as a confirmation.
+ */
+describe('verifyTransaction — an unreadable answer is not a failed one', () => {
+  /** The OAuth leg, then the Order Confirmation leg. */
+  const stubGateway = (verifyBody: unknown) => {
+    const fetchMock = vi
+      .fn<(...args: unknown[]) => Promise<unknown>>()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ access_token: 'test-token', expires_in: 300 }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(verifyBody),
+      });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    return fetchMock;
+  };
+
+  beforeEach(async () => {
+    (await airpay()).resetTokenCache();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('returns null for an envelope it cannot decrypt', async () => {
+    // Byte-for-byte the shape the live gateway returned for YV-3200A-2AB47227:
+    // a well-formed envelope — 16 hex characters of IV, then block-aligned
+    // base64 — encrypted under a key this code does not have.
+    stubGateway({
+      merchant_id: null,
+      response: `509361e8503ab0a0${Buffer.from('x'.repeat(96)).toString('base64')}`,
+    });
+
+    const { verifyTransaction } = await airpay();
+
+    await expect(verifyTransaction('YV-3200A-2AB47227')).resolves.toBeNull();
+  });
+
+  it('returns null when the body carries no transaction status at all', async () => {
+    stubGateway({ merchant_id: null, message: 'something we did not model' });
+
+    const { verifyTransaction } = await airpay();
+
+    await expect(verifyTransaction('YV-3200A-2AB47227')).resolves.toBeNull();
+  });
+
+  it('still reads a confirmation that does state a status', async () => {
+    stubGateway({
+      data: {
+        orderid: 'YV-3200A-2AB47227',
+        ap_transactionid: '2051234202',
+        amount: '81.00',
+        transaction_status: '200',
+        transaction_payment_status: 'SUCCESS',
+      },
+    });
+
+    const { verifyTransaction } = await airpay();
+    const confirmation = await verifyTransaction('YV-3200A-2AB47227');
+
+    expect(confirmation?.transactionStatus).toBe(200);
+    expect(confirmation?.amount).toBe(81);
+    expect(confirmation?.apTransactionId).toBe('2051234202');
   });
 });

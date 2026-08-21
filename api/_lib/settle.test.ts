@@ -284,6 +284,29 @@ describe('settleOrder — inconclusive outcomes stay inconclusive', () => {
   });
 
   /*
+   * The regression that cost a real payment.
+   *
+   * Airpay's Order Confirmation replies to MID 366950 with an encrypted
+   * envelope the code cannot yet decrypt, so it produced a confirmation with no
+   * transaction status. `null !== 200`, so the order fell through into `failed`
+   * and was terminally marked wrong. Order YV-3200A-2AB47227 — a genuine ₹81
+   * UPI payment — was destroyed that way.
+   *
+   * A missing status is an unknown. Only a status Airpay actually stated may
+   * fail an order.
+   */
+  it('will not fail an order on a confirmation carrying no transaction status', async () => {
+    gatewaySays = { transactionStatus: null, amount: null };
+
+    const settleOrder = await settle();
+
+    const result = await settleOrder(callback());
+
+    expect(result.outcome).toBe('pending');
+    expect(rows[0].payment_status).toBe('initiated');
+  });
+
+  /*
    * Order Confirmation does not work on a sandbox MID, so there is no trusted
    * source of truth available. The order therefore stays unsettled rather than
    * falling back to believing the callback — which is exactly the hole this
