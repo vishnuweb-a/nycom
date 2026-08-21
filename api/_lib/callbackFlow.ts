@@ -1,6 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { parseCallbackEnvelope, type ParsedCallback } from './callbackPayload.js';
+import {
+  describeCallbackRequest,
+  hydrateRequestBody,
+  parseCallbackEnvelope,
+  type ParsedCallback,
+} from './callbackPayload.js';
 import { db } from './db.js';
 import { log } from './log.js';
 import { forwardCallback } from './relay.js';
@@ -65,12 +70,31 @@ export const processAirpayCallback = async (
   req: VercelRequest,
   options: CallbackFlowOptions,
 ): Promise<CallbackFlowResult> => {
+  /*
+   * The platform parses a body only for the content types it recognises, and
+   * leaves the stream unread for everything else — `multipart/form-data` most
+   * of all. Draining it here, before parsing, is what makes the parser see a
+   * callback that Vercel handed over as `undefined`.
+   *
+   * A no-op whenever the body was already parsed, which is every case the
+   * endpoint has served until now.
+   */
+  await hydrateRequestBody(req);
+
   const parsed = parseCallbackEnvelope(req);
 
   if (parsed === null) {
+    /*
+     * Logged with enough shape to tell the three causes apart — a body that
+     * never arrived, an envelope that would not decrypt, and field names we do
+     * not recognise — because each needs a different fix and, on a live
+     * gateway, each wrong guess costs another real payment to observe. Names
+     * and counts only; never a value.
+     */
     log.warn('payment.callback.unparseable', {
       leg: options.leg,
       method: req.method ?? 'unknown',
+      ...describeCallbackRequest(req),
     });
 
     return { parsed: null, settlement: null };

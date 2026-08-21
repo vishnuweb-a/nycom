@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+
 import type { VercelRequest } from '@vercel/node';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -445,5 +447,116 @@ describe('the relay stays auxiliary', () => {
 
     expect(forwardCallback).toHaveBeenCalledTimes(1);
     expect(rows[0].payment_status).toBe('initiated');
+  });
+});
+
+/**
+ * The production failure of 2026-08-21, end to end.
+ *
+ * A real ₹83 payment (YV-ABJ5T-3C1DDCEF) completed at Airpay and the customer
+ * reached the success page, but both callback legs logged
+ * `payment.callback.unparseable` and nothing settled. The cause was not the
+ * parser's field handling — it was that the body never reached the parser:
+ * Vercel hands `req.body` as `undefined` for any content type outside json /
+ * urlencoded / text-plain / octet-stream, leaving the bytes in the stream.
+ *
+ * These deliver through the real pipeline with `body` undefined and the payload
+ * only in the stream, which is what production actually looks like. They fail
+ * against the previous revision and pass against this one.
+ */
+describe('a callback the platform did not parse still settles', () => {
+  const BOUNDARY = '----AirpayFormBoundary7MA4YWxkTrZu0gW';
+
+  const multipart = (fields: Record<string, string>): string =>
+    `${Object.entries(fields)
+      .map(
+        ([name, value]) =>
+          `--${BOUNDARY}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      )
+      .join('')}--${BOUNDARY}--\r\n`;
+
+  /** A request whose payload exists only in the stream, as Vercel delivers it. */
+  const streamed = (raw: string): VercelRequest =>
+    Object.assign(Readable.from([Buffer.from(raw, 'utf8')]), {
+      body: undefined,
+      query: {},
+      method: 'POST',
+      headers: { 'content-type': `multipart/form-data; boundary=${BOUNDARY}` },
+    }) as unknown as VercelRequest;
+
+  const deliverStream = async (raw: string, leg: 'ipn' | 'browser' = 'ipn') => {
+    const { processAirpayCallback } = await import('./callbackFlow.js');
+
+    return processAirpayCallback(streamed(raw), { leg, relay: true });
+  };
+
+  it('settles an IPN delivered as multipart/form-data', async () => {
+    const { settlement, parsed } = await deliverStream(multipart(CALLBACK));
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.payload.orderRef).toBe(ORDER_REF);
+    // Settlement still came from Airpay, not from the body that was parsed.
+    expect(requested[1]).toContain('/api/verify/');
+    expect(settlement?.outcome).toBe('paid');
+    expect(rows[0].payment_status).toBe('paid');
+    expect(rows[0].ap_transactionid).toBe('2051234202');
+  });
+
+  it('settles the browser Response leg delivered as multipart/form-data', async () => {
+    const { settlement, parsed } = await deliverStream(multipart(CALLBACK), 'browser');
+
+    expect(parsed?.payload.orderRef).toBe(ORDER_REF);
+    expect(settlement?.outcome).toBe('paid');
+    expect(rows[0].payment_status).toBe('paid');
+  });
+
+  it('forwards the multipart fields to KKChat verbatim, after settling', async () => {
+    await deliverStream(multipart(CALLBACK));
+
+    expect(rows[0].payment_status).toBe('paid');
+    expect(forwardCallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses a streamed body carrying no order reference', async () => {
+    const { parsed, settlement } = await deliverStream('--nonsense--\r\n');
+
+    expect(parsed).toBeNull();
+    expect(settlement).toBeNull();
+    expect(rows[0].payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+  });
+
+  /*
+   * The body being readable changes nothing about who decides the outcome. A
+   * multipart callback claiming SUCCESS settles on Airpay's answer alone.
+   */
+  it('does not let a readable multipart body decide the outcome', async () => {
+    script = { body: confirms('400') };
+
+    const { settlement } = await deliverStream(
+      multipart({ ...CALLBACK, TRANSACTIONSTATUS: '200', MESSAGE: 'SUCCESS' }),
+    );
+
+    expect(settlement?.outcome).toBe('failed');
+    expect(rows[0].payment_status).toBe('failed');
+  });
+
+  it('holds a multipart callback whose SecureHash does not match', async () => {
+    const { settlement } = await deliverStream(
+      multipart({ ...CALLBACK, ap_SecureHash: '999999999' }),
+    );
+
+    expect(settlement?.outcome).toBe('hash_mismatch');
+    expect(rows[0].payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+  });
+
+  it('settles a multipart delivery exactly once when Airpay retries it', async () => {
+    const first = await deliverStream(multipart(CALLBACK));
+    const second = await deliverStream(multipart(CALLBACK));
+
+    expect(first.settlement?.outcome).toBe('paid');
+    expect(second.settlement?.outcome).toBe('already_settled');
+    expect(transitions).toBe(1);
   });
 });

@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+
 import type { VercelRequest } from '@vercel/node';
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -280,5 +282,221 @@ describe('parseCallbackEnvelope — fields forwarded to the relay', () => {
     // the relay reproduces the documented shape rather than a typed variant.
     expect(result?.fields.TRANSACTIONSTATUS).toBe('200');
     expect(typeof result?.fields.AMOUNT).toBe('string');
+  });
+});
+
+/**
+ * The failure this suite exists to prevent, reproduced from the platform's own
+ * rules rather than from a guess.
+ *
+ * Vercel's `getBodyParser` populates `req.body` for exactly four content types
+ * — json, x-www-form-urlencoded, text/plain and octet-stream — and returns
+ * `undefined` for every other, leaving the request stream unread. A missing
+ * header is normalised to text/plain, so it is specifically a *present but
+ * unrecognised* type that yields nothing, and `multipart/form-data` is the one
+ * such type a payment gateway plausibly posts.
+ *
+ * The requests below are real readable streams with `body` undefined, which is
+ * precisely what the handler receives in production. Every earlier "raw body"
+ * test passed a string in `req.body` — a real case, but not this one, and the
+ * reason the gap survived a full audit.
+ */
+describe('callbacks the platform hands over unparsed', () => {
+  const BOUNDARY = '----AirpayFormBoundary7MA4YWxkTrZu0gW';
+
+  /** Builds a multipart body of simple named text fields. */
+  const multipart = (fields: Record<string, string>, boundary = BOUNDARY): string =>
+    `${Object.entries(fields)
+      .map(
+        ([name, value]) =>
+          `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      )
+      .join('')}--${boundary}--\r\n`;
+
+  /** A request whose body exists only in the stream, as Vercel delivers it. */
+  const streamed = (raw: string, contentType?: string): VercelRequest => {
+    const stream = Readable.from([Buffer.from(raw, 'utf8')]);
+
+    return Object.assign(stream, {
+      body: undefined,
+      query: {},
+      method: 'POST',
+      headers: contentType === undefined ? {} : { 'content-type': contentType },
+    }) as unknown as VercelRequest;
+  };
+
+  const read = async (req: VercelRequest) => {
+    const { hydrateRequestBody, parseCallbackEnvelope } = await import('./callbackPayload.js');
+
+    await hydrateRequestBody(req);
+
+    return parseCallbackEnvelope(req);
+  };
+
+  const CALLBACK = {
+    MERCID: 'TESTMID',
+    TRANSACTIONID: 'YV-ABJ5T-3C1DDCEF',
+    APTRANSACTIONID: '2051234999',
+    AMOUNT: '83.00',
+    TRANSACTIONSTATUS: '200',
+    MESSAGE: 'Transaction Successful',
+    CUSTOMERVPA: 'someone@okbank',
+    ap_SecureHash: '1234567890',
+  } as const;
+
+  it('reads a multipart callback that arrives with body undefined', async () => {
+    const result = await read(
+      streamed(multipart(CALLBACK), `multipart/form-data; boundary=${BOUNDARY}`),
+    );
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.amount).toBe('83.00');
+    expect(result?.payload.transactionStatus).toBe('200');
+    expect(result?.payload.apTransactionId).toBe('2051234999');
+    expect(result?.payload.message).toBe('Transaction Successful');
+    expect(result?.payload.customerVpa).toBe('someone@okbank');
+    expect(result?.payload.secureHash).toBe('1234567890');
+  });
+
+  it('preserves the original casing for the relay', async () => {
+    const result = await read(
+      streamed(multipart(CALLBACK), `multipart/form-data; boundary=${BOUNDARY}`),
+    );
+
+    // The relay forwards these verbatim; a normalised rewrite would change what
+    // KKChat has always received.
+    expect(result?.fields).toEqual({ ...CALLBACK });
+  });
+
+  it('accepts a quoted boundary in the content type', async () => {
+    const result = await read(
+      streamed(multipart(CALLBACK), `multipart/form-data; boundary="${BOUNDARY}"`),
+    );
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+  });
+
+  /* The delimiter is in the payload either way, so a lost header is survivable. */
+  it('recovers the boundary from the body when the header does not carry one', async () => {
+    const result = await read(streamed(multipart(CALLBACK), 'multipart/form-data'));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+  });
+
+  it('reads a form-urlencoded callback that arrives only in the stream', async () => {
+    const result = await read(
+      streamed(
+        'TRANSACTIONID=YV-STREAM-0001&AMOUNT=5.00&TRANSACTIONSTATUS=200',
+        'application/x-www-form-urlencoded',
+      ),
+    );
+
+    expect(result?.payload.orderRef).toBe('YV-STREAM-0001');
+    expect(result?.payload.amount).toBe('5.00');
+  });
+
+  it('reads a JSON callback that arrives only in the stream', async () => {
+    const result = await read(
+      streamed(JSON.stringify({ TRANSACTIONID: 'YV-STREAM-0002' }), 'application/json'),
+    );
+
+    expect(result?.payload.orderRef).toBe('YV-STREAM-0002');
+  });
+
+  /*
+   * A multipart body run through URLSearchParams does not throw — it yields one
+   * nonsense key. That would look like a parsed callback with no reference, and
+   * is why multipart is tried before the form decoding rather than after.
+   */
+  it('does not mistake a multipart body for a urlencoded one', async () => {
+    const result = await read(streamed(multipart({ TRANSACTIONID: 'YV-STREAM-0003' })));
+
+    expect(result?.payload.orderRef).toBe('YV-STREAM-0003');
+  });
+
+  it('never overwrites a body the platform already parsed', async () => {
+    const { hydrateRequestBody } = await import('./callbackPayload.js');
+    const req = streamed('TRANSACTIONID=FROM-STREAM', 'application/x-www-form-urlencoded');
+
+    (req as { body: unknown }).body = { TRANSACTIONID: 'FROM-PLATFORM' };
+
+    await hydrateRequestBody(req);
+
+    expect((req as { body: { TRANSACTIONID: string } }).body.TRANSACTIONID).toBe('FROM-PLATFORM');
+  });
+
+  it('still refuses a streamed body carrying no order reference', async () => {
+    expect(await read(streamed('just-some-garbage', 'multipart/form-data'))).toBeNull();
+    expect(await read(streamed('', 'multipart/form-data'))).toBeNull();
+  });
+
+  it('does not throw on a stream that yields nothing', async () => {
+    const { hydrateRequestBody } = await import('./callbackPayload.js');
+    const req = streamed('', 'multipart/form-data');
+
+    await expect(hydrateRequestBody(req)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The diagnostics attached to `payment.callback.unparseable`.
+ *
+ * The line previously carried only the leg and the method, which cannot
+ * separate a body that never arrived from an envelope that would not decrypt
+ * from field names we do not recognise. On a live gateway each wrong guess
+ * costs another real payment to observe, so the shape is logged — names and
+ * counts only, never a value, because the values are a customer's phone,
+ * email and VPA.
+ */
+describe('describeCallbackRequest', () => {
+  it('reports the content type, body shape and field names', async () => {
+    const { describeCallbackRequest } = await import('./callbackPayload.js');
+
+    const fields = describeCallbackRequest({
+      body: 'TRANSACTIONID=YV-1&CUSTOMEREMAIL=someone@example.com',
+      query: { ref: 'YV-1' },
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    } as unknown as VercelRequest);
+
+    expect(fields.contentType).toBe('application/x-www-form-urlencoded');
+    expect(fields.bodyType).toBe('string');
+    expect(fields.decodedFieldCount).toBe(2);
+    expect(fields.decodedKeys).toBe('TRANSACTIONID,CUSTOMEREMAIL');
+    expect(fields.queryKeys).toBe('ref');
+  });
+
+  it('never includes a field value', async () => {
+    const { describeCallbackRequest } = await import('./callbackPayload.js');
+
+    const emitted = JSON.stringify(
+      describeCallbackRequest({
+        body: { CUSTOMEREMAIL: 'someone@example.com', CUSTOMERPHONE: '9876543210' },
+        query: {},
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      } as unknown as VercelRequest),
+    );
+
+    expect(emitted).toContain('CUSTOMEREMAIL');
+    expect(emitted).not.toContain('someone@example.com');
+    expect(emitted).not.toContain('9876543210');
+  });
+
+  it('describes a body the platform dropped entirely', async () => {
+    const { describeCallbackRequest } = await import('./callbackPayload.js');
+
+    const fields = describeCallbackRequest({
+      body: undefined,
+      query: {},
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary=x' },
+    } as unknown as VercelRequest);
+
+    // Exactly the signature of the production failure: a multipart content
+    // type, an undefined body, and nothing decoded.
+    expect(fields.bodyType).toBe('undefined');
+    expect(fields.decodedFieldCount).toBe(0);
+    expect(fields.decodedKeys).toBe('(none)');
   });
 });
