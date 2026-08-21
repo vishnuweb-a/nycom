@@ -1,7 +1,14 @@
 # Yarnvia Airpay Production Deployment Guide
 
-Status: **not yet deployed.** No Airpay request has ever been made from this
-codebase, and no live payment has been attempted.
+Status: **deployed and live.** MID 366950 is taking real payments. One live
+₹81 UPI payment has succeeded end to end (order `YV-3200A-2AB47227`, Airpay
+transaction `2051234202`).
+
+> **The registered URLs are not the ones this document originally assumed.**
+> Airpay resolves the Response URL and the IPN URL per MID from its dashboard,
+> and against MID 366950 both are
+> `https://www.yarnvia.online/callback/cpm/arp/collection`. The application was
+> changed to meet that; the dashboard was not changed. See §8.
 
 Audience: a developer deploying this integration for the first time.
 
@@ -51,9 +58,10 @@ Airpay hosted payment page (payments.airpay.co.in)
    │
    │  customer pays
    ▼
-   ├── IPN ─────────────▶ https://www.yarnvia.online/api/payments/callback
-   ├── Browser return ──▶ https://www.yarnvia.online/api/payments/return
-   │      (both resolved PER-MID from the Airpay dashboard)
+   ├── IPN ─────────────▶ https://www.yarnvia.online/callback/cpm/arp/collection
+   ├── Browser return ──▶ https://www.yarnvia.online/callback/cpm/arp/collection
+   │      (both resolved PER-MID from the Airpay dashboard; MID 366950 has the
+   │       SAME URL registered for both, and one handler serves both)
    │
    └── Settlement always verifies by PULLING the truth from Airpay:
           Order Confirmation API, keyed by orderid, server-to-server
@@ -66,7 +74,7 @@ than wait. Three triggers drive the same verified settlement path:
 
 | Trigger | Endpoint | Fires when |
 | --- | --- | --- |
-| IPN | `/api/payments/callback` | Airpay notifies us, server to server |
+| IPN | `/callback/cpm/arp/collection` | Airpay notifies us, server to server |
 | Pull | `/api/orders/:ref` | The shopper is on the success page |
 | Sweep | `/api/payments/reconcile` | Vercel Cron, daily (Hobby plan limit) |
 
@@ -79,7 +87,7 @@ account.
 > `kkchat.in` must NOT be registered against the MID as Yarnvia's IPN or return
 > URL — Airpay has to reach Yarnvia directly, or the shopper never gets a
 > confirmation page. Outbound, however, Yarnvia *does* forward: after settling,
-> `/api/payments/callback` relays the callback to
+> `/callback/cpm/arp/collection` relays the callback to
 > `https://kkchat.in/callback/cpm/arp/collection`, preserving the forwarding
 > behaviour the earlier Frontiva integration established. That relay is
 > auxiliary and cannot affect settlement — see §9.
@@ -358,14 +366,29 @@ Both destinations are resolved by Airpay **per-MID from its dashboard**. The
 Simple Transaction request carries no URL parameter of any kind, so Yarnvia
 cannot set them per transaction and no such parameter should be invented.
 
-| Setting | Value |
+| Setting | Value as registered on MID 366950 |
 | --- | --- |
-| Success / Return URL | `https://www.yarnvia.online/api/payments/return` |
-| IPN / Callback URL | `https://www.yarnvia.online/api/payments/callback` |
+| Domain URL | `https://www.yarnvia.online` |
+| Response URL (success/failed) | `https://www.yarnvia.online/callback/cpm/arp/collection` |
+| IPN / Callback URL | `https://www.yarnvia.online/callback/cpm/arp/collection` |
 | Registered domain | `www.yarnvia.online` |
 
 The `www` host is part of the origin and is matched literally. Register the
 canonical host, not the apex.
+
+**Do not change these to `/api/payments/…`.** The application now serves the
+registered path directly. `vercel.json` rewrites
+`/callback/cpm/arp/collection` onto the function at
+`api/callback/cpm/arp/collection.ts`, ahead of the SPA catch-all — and that
+ordering is load-bearing. Before the rewrite existed, the catch-all swallowed
+the path and Airpay's POST was answered `405 Method Not Allowed` by the static
+file server, which is why order `YV-3200A-2AB47227` stayed at `initiated`
+despite a successful ₹81 payment.
+
+`/api/payments/callback` and `/api/payments/return` are still live and still
+work. They are transport adapters over the same `_lib/callbackFlow.ts`
+pipeline as the public route, so all three settle through one `settleOrder`
+and there is no second settlement path.
 
 If any URL belonging to another integration is currently registered against this
 MID, it must be replaced with the two above — and that strongly suggests the MID
@@ -373,9 +396,9 @@ is shared, which needs resolving first (see §18).
 
 ### Step 3 — the outbound relay
 
-Registering the two URLs above governs what Airpay sends *to* Yarnvia. Separately,
-and outbound, `/api/payments/callback` forwards every callback it receives on to
-the merchant's existing collection endpoint:
+Registering the URL above governs what Airpay sends *to* Yarnvia. Separately,
+and outbound, the inbound route forwards every callback it receives on to the
+merchant's existing collection endpoint — **after** settlement, never before:
 
 | Setting | Value |
 | --- | --- |
@@ -385,6 +408,13 @@ the merchant's existing collection endpoint:
 | Accept | `application/json` |
 | Body | a JSON **object** of the Airpay fields, values left as strings |
 | Override | `KKCHAT_CALLBACK_URL` (set to `off` to disable) |
+| Timeout | 5s, and a failure of any kind cannot affect settlement |
+
+The public route relays **both** legs — the browser return and the IPN — because
+Airpay has one URL registered for both, and because under the previous
+integration `kkchat.in` was itself registered for both and therefore already
+saw both deliveries. `/api/payments/return` does not relay, so nothing is
+forwarded three times.
 
 This preserves the forwarding behaviour established by the earlier Frontiva
 integration, and requires no configuration to work — the established destination
@@ -441,7 +471,13 @@ produce a settlement, because the claim is never consulted.
 ## 10. Return URL Architecture
 
 ```
-Airpay ──▶ /api/payments/return   (POST or GET, fields in body or query)
+Airpay ──▶ /callback/cpm/arp/collection   (POST or GET, fields in body or query)
+              │
+              │  one URL, two kinds of caller. `isBrowserNavigation` reads
+              │  Sec-Fetch-Dest (falling back to Accept) and decides only the
+              │  SHAPE of the reply — a 303 for a browser, JSON for an IPN.
+              │  Both have already been settled by the time it is consulted,
+              │  so the browser leg cannot bypass gateway verification.
               │
               │  runs the same settlement as the callback — they race, and
               │  either may win; settlement is safe to attempt twice
@@ -623,8 +659,8 @@ this repository, a ticket, or a chat message.
 >
 > **`www` is part of the origin.** Airpay matches the return URL literally, so
 > `https://www.yarnvia.online` and `https://yarnvia.online` are different
-> origins to it. Register
-> `https://www.yarnvia.online/api/payments/return` on the `www` host.
+> origins to it. The registered Response URL is
+> `https://www.yarnvia.online/callback/cpm/arp/collection` on the `www` host.
 >
 > Prefer pointing Airpay at the canonical host rather than relying on a
 > redirect: the return leg is a form POST, and a redirect hop adds a way for

@@ -1334,19 +1334,41 @@ is covered by tests.
 Both inbound endpoints live on Yarnvia's own domain. Airpay posts to them
 directly; nothing proxies or relays *into* Yarnvia.
 
-Outbound is a separate matter, and it is deliberate. `/api/payments/callback`
+Outbound is a separate matter, and it is deliberate. The inbound route
 forwards each callback it receives to the merchant's existing KKChat collection
 endpoint, reproducing the behaviour established by the Frontiva integration so
 that the merchant's own reconciliation keeps seeing the events it always has.
 That relay is auxiliary and can never affect settlement — see "Callback relay"
 below.
 
-    IPN     POST https://www.yarnvia.online/api/payments/callback
-    Return  GET|POST https://www.yarnvia.online/api/payments/return
+    IPN     POST     https://www.yarnvia.online/callback/cpm/arp/collection
+    Return  GET|POST https://www.yarnvia.online/callback/cpm/arp/collection
 
-Both must be registered against Yarnvia's Airpay MID, because Airpay resolves
-them per-MID from its dashboard rather than from anything in the request — see
-"Return URL is dashboard-configured" below.
+Airpay resolves both per-MID from its dashboard rather than from anything in the
+request — see "Return URL is dashboard-configured" below — and against MID
+366950 it has the *same* URL registered for both. So one function serves both:
+`api/callback/cpm/arp/collection.ts`, reached through a `vercel.json` rewrite
+that must sit ahead of the SPA catch-all.
+
+It is a transport adapter and nothing more. Parsing, verification, settlement
+and the relay all live in `api/_lib/callbackFlow.ts`, which the two internal
+endpoints call as well:
+
+    api/callback/cpm/arp/collection.ts ─┐
+    api/payments/callback.ts           ─┼─▶ _lib/callbackFlow.ts ─▶ _lib/settle.ts
+    api/payments/return.ts             ─┘                        └▶ _lib/relay.ts
+
+One settlement implementation behind every URL. A second one would be a second
+chance to get a payment wrong.
+
+The browser and the IPN arrive on the same path and are settled identically;
+`isBrowserNavigation` reads `Sec-Fetch-Dest` (falling back to `Accept`) and
+decides only the shape of the reply — a 303 to `/order-success` for a browser,
+JSON for a machine. It is consulted *after* settlement, so the browser leg
+cannot bypass Order Confirmation and a forged header buys nothing.
+
+`/api/payments/callback` and `/api/payments/return` remain live for any client
+still pointing at them.
 
 Neither `frontiva.online` nor `kkchat.in` belongs in Yarnvia's *inbound* chain:
 Airpay must be configured to post to Yarnvia directly rather than through a third
@@ -1355,8 +1377,8 @@ by Order Confirmation rather than by whoever called.
 
 ## Callback relay
 
-`/api/payments/callback` forwards to the merchant's existing endpoint, after it
-has settled the order:
+The inbound route forwards to the merchant's existing endpoint, after it has
+settled the order:
 
     POST https://kkchat.in/callback/cpm/arp/collection
     Content-Type: application/json
@@ -1432,7 +1454,8 @@ Yarnvia-native end to end. Airpay is the only external party.
     ┌────────────────────────────┬──────────────────────────────┐
     ↓ server-to-server           ↓ browser redirect
     Airpay IPN                   Airpay return
-    → /api/payments/callback     → /api/payments/return
+    → /callback/cpm/arp/         → /callback/cpm/arp/
+      collection                   collection
          ↓                            ↓
          └──────────┬─────────────────┘
                     ↓
@@ -1452,8 +1475,8 @@ through Order Confirmation before touching an order:
 
 | Trigger | Endpoint | Fires when |
 | --- | --- | --- |
-| IPN | `/api/payments/callback` | Airpay notifies us, server to server |
-| Return + poll | `/api/payments/return` → `/api/orders/:ref` | the shopper comes back |
+| IPN | `/callback/cpm/arp/collection` | Airpay notifies us, server to server |
+| Return + poll | `/callback/cpm/arp/collection` → `/api/orders/:ref` | the shopper comes back |
 | Sweep | `/api/payments/reconcile` | daily cron, for orders nobody reported |
 
 A settlement reached by the sweep is verified exactly as strictly as one

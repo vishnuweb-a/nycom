@@ -1,13 +1,21 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { parseCallback } from '../_lib/callbackPayload.js';
-import { db } from '../_lib/db.js';
+import {
+  processAirpayCallback,
+  redirectBrowser,
+  successPageLocation,
+} from '../_lib/callbackFlow.js';
 import { withErrorHandling } from '../_lib/http.js';
 import { log } from '../_lib/log.js';
-import { settleOrder } from '../_lib/settle.js';
 
 /**
- * GET|POST /api/payments/return — where Airpay sends the customer's browser.
+ * GET|POST /api/payments/return — the internal browser-return endpoint.
+ *
+ * As with `callback.ts`, Airpay no longer sends anything here: against MID
+ * 366950 the browser is handed back to `/callback/cpm/arp/collection`, served
+ * by `api/callback/cpm/arp/collection.ts`. This path is kept working for any
+ * client or deployment still pointing at it, and shares the same pipeline, so
+ * the two cannot diverge.
  *
  * This is a navigation endpoint, not an API: it redirects into the SPA. It runs
  * the same settlement as the webhook, because the two race and either may
@@ -15,70 +23,28 @@ import { settleOrder } from '../_lib/settle.js';
  *
  * What it must never do is tell the customer they have paid because they
  * arrived here. A redirect proves only that a browser was pointed at a URL —
- * anyone can type it. The redirect target carries the order reference and its
+ * anyone can type one. The redirect target carries the order reference and its
  * opaque read key; the success page then asks the server what actually
  * happened.
+ *
+ * It does not relay to KKChat. That has always been the callback leg's job, and
+ * the public `/callback/…` route now covers the browser leg too, so starting to
+ * relay here would only add a third copy of the same event.
  */
-
-/** Where to send the browser. Falls back to the deployment's own host. */
-const siteOrigin = (req: VercelRequest): string => {
-  const configured = process.env.PUBLIC_SITE_ORIGIN;
-
-  if (configured !== undefined && configured !== '') {
-    return configured.replace(/\/$/, '');
-  }
-
-  // `x-forwarded-host` is set by Vercel's proxy. Used only to build a relative
-  // redirect back to this same deployment, never as a trust signal.
-  const host = req.headers['x-forwarded-host'] ?? req.headers.host;
-  const resolved = Array.isArray(host) ? host[0] : host;
-
-  return resolved === undefined ? '' : `https://${resolved}`;
-};
-
-const redirect = (res: VercelResponse, location: string): void => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.redirect(303, location);
-};
-
 const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> => {
-  const origin = siteOrigin(req);
-  const payload = parseCallback(req);
+  const { parsed, settlement } = await processAirpayCallback(req, {
+    leg: 'return',
+    relay: false,
+  });
 
-  if (payload === null) {
-    log.warn('payment.return.unparseable', { method: req.method ?? 'unknown' });
+  const orderRef = parsed?.payload.orderRef ?? null;
 
-    redirect(res, `${origin}/order-success?status=unknown`);
+  log.info('payment.return.handled', {
+    orderRef,
+    outcome: settlement?.outcome ?? null,
+  });
 
-    return;
-  }
-
-  const result = await settleOrder(payload);
-
-  // The read key is looked up server-side rather than accepted from the query
-  // string, so a crafted return URL cannot hand someone else's token back.
-  const { data } = await db()
-    .from('orders')
-    .select('access_token')
-    .eq('order_ref', payload.orderRef)
-    .maybeSingle();
-
-  const accessToken = (data as { access_token?: string } | null)?.access_token;
-
-  if (accessToken === undefined) {
-    redirect(res, `${origin}/order-success?status=unknown`);
-
-    return;
-  }
-
-  const target = new URL(`${origin}/order-success`);
-
-  target.searchParams.set('ref', payload.orderRef);
-  target.searchParams.set('t', accessToken);
-
-  log.info('payment.return.handled', { orderRef: payload.orderRef, outcome: result.outcome });
-
-  redirect(res, target.toString());
+  redirectBrowser(res, await successPageLocation(req, orderRef));
 };
 
 export default withErrorHandling('payment.return', handler);

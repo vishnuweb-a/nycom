@@ -1,20 +1,21 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { parseCallbackEnvelope } from '../_lib/callbackPayload.js';
+import { processAirpayCallback } from '../_lib/callbackFlow.js';
 import { methodNotAllowed, sendJson, withErrorHandling } from '../_lib/http.js';
-import { log } from '../_lib/log.js';
-import { forwardCallback } from '../_lib/relay.js';
-import { settleOrder } from '../_lib/settle.js';
 
 /**
- * POST /api/payments/callback — Yarnvia's own Airpay IPN endpoint.
+ * POST /api/payments/callback — the internal Airpay IPN endpoint.
  *
- * This is the URL to register as the IPN/callback destination for Yarnvia's
- * Airpay MID. Airpay posts here directly, server to server.
+ * Airpay itself no longer calls this. Against MID 366950 the registered
+ * Response and IPN URL is `/callback/cpm/arp/collection`, which
+ * `api/callback/cpm/arp/collection.ts` serves. This path is kept because it is
+ * a working, tested, externally-verified endpoint — a Postman run against it
+ * already proved callback processing and KKChat forwarding end to end — and
+ * because it remains the right destination if the MID is ever repointed.
  *
- * The path follows `docs/payment.md` §9 rather than the `/api/payments/airpay/…`
- * form sketched in the brief, since the plan is the approved specification and
- * this deployment has exactly one gateway.
+ * Both routes are transport adapters over the same `processAirpayCallback`
+ * pipeline, so they cannot drift apart: there is one settlement, one relay, and
+ * one place either could be changed.
  *
  * This endpoint is public, unauthenticated and reachable by anyone. It is
  * treated accordingly: the body is parsed as hostile input, and nothing in it
@@ -30,15 +31,6 @@ import { settleOrder } from '../_lib/settle.js';
  * delayed, dropped or never configured, `payments/reconcile.ts` and the success
  * page's polling reach the same verified outcome by a different route.
  *
- * ── Two responsibilities, in a deliberate order ─────────────────────────────
- *
- * 1. Settle the order. Payment-critical, and it happens first.
- * 2. Relay the callback to the merchant's existing KKChat endpoint. Auxiliary.
- *
- * The ordering is the safety property. Settlement completes before the relay is
- * even attempted, so a KKChat outage, timeout or 500 cannot delay, corrupt or
- * roll back a verified payment — see `_lib/relay.ts`, which cannot throw.
- *
  * Always answers 200. Airpay retries non-2xx responses, and a retry storm
  * against an endpoint that is working correctly — but reporting "I could not
  * settle this yet" — helps nobody. The outcome is carried in the body and the
@@ -53,37 +45,16 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
     return;
   }
 
-  const parsed = parseCallbackEnvelope(req);
+  const { parsed, settlement } = await processAirpayCallback(req, { leg: 'ipn', relay: true });
 
   if (parsed === null) {
-    log.warn('payment.callback.unparseable', { method: req.method ?? 'unknown' });
-
     // 200 even here: an unparseable body will not become parseable on retry.
     sendJson(res, 200, { received: true });
 
     return;
   }
 
-  log.info('payment.callback.received', {
-    orderRef: parsed.payload.orderRef,
-    transactionStatus: parsed.payload.transactionStatus,
-    fieldCount: Object.keys(parsed.fields).length,
-  });
-
-  const result = await settleOrder(parsed.payload);
-
-  /*
-   * Awaited rather than fired and forgotten. On a serverless runtime the
-   * instance may be frozen the moment the response is written, which would
-   * silently drop an un-awaited request — the relay would appear to work
-   * locally and never fire in production.
-   *
-   * Awaiting is safe because `forwardCallback` cannot throw and is bounded by
-   * its own 5s timeout, so the worst case is a slightly later 200.
-   */
-  await forwardCallback(parsed.fields, parsed.payload.orderRef);
-
-  sendJson(res, 200, { received: true, outcome: result.outcome });
+  sendJson(res, 200, { received: true, outcome: settlement?.outcome });
 };
 
 export default withErrorHandling('payment.callback', handler);
