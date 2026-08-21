@@ -403,9 +403,10 @@ export const getAccessToken = async (): Promise<string> => {
      * evidence than either the documentation or the merchant's recollection,
      * which is why the stated mapping is overridden here.
      *
-     * Note this means AIRPAY_SECRET_KEY serves two roles: the OAuth secret and
-     * the `secret` in the privatekey derivation. AIRPAY_API_KEY is consequently
-     * unused by this integration — see the note in `env.ts`.
+     * AIRPAY_SECRET_KEY is used here and only here. The privatekey derivation
+     * takes AIRPAY_API_KEY instead — see `privateKey()` above, where the same
+     * empirical argument runs in the opposite direction. Both credentials are
+     * in use, in exactly one role each.
      */
     client_secret: env.AIRPAY_SECRET_KEY,
     merchant_id: env.AIRPAY_MID,

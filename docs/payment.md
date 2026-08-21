@@ -458,3 +458,41 @@ This resolves §17 Q3, and reverses the merchant-stated mapping recorded in §8.
 
 §17 Q1 (callback ownership) is answered by this note. §17 Q5 is answered: the
 return URL is dashboard-configured only, with no per-transaction override.
+
+---
+
+# SECOND CORRECTION — the KKChat relay is in scope after all
+
+The note above concluded that the forwarding described in §11 was not Yarnvia's
+concern. **That conclusion was wrong, and the merchant has since confirmed it.**
+The Frontiva integration had a working `Airpay → callback → KKChat` chain, and
+the final forwarding step is part of the behaviour Yarnvia is expected to
+reproduce, so that the merchant's existing reconciliation keeps receiving the
+events it always has.
+
+`/api/payments/callback` now forwards, using the destination recorded in §11 —
+not a new one:
+
+    POST https://kkchat.in/callback/cpm/arp/collection
+    Content-Type: application/json
+    Accept:       application/json
+    Body:         a JSON OBJECT of the Airpay fields, values left as strings
+
+`KKCHAT_CALLBACK_URL` overrides the destination; `off` disables the relay.
+
+## What has NOT changed
+
+The concern raised in §11 still stands and is still respected: **money events are
+not consumed second-hand.** The relay is outbound only. Nothing KKChat says, or
+fails to say, can settle an order. Order Confirmation remains the sole authority,
+exactly as specified, and `frontiva.online` remains entirely absent — Yarnvia
+forwards directly to the final destination rather than through the intermediate
+hop, which is one fewer party in the chain.
+
+The relay is auxiliary by construction (`api/_lib/relay.ts`): it runs only after
+settlement, cannot throw, never retries, and is bounded by a 5s timeout. A KKChat
+outage produces a log line and nothing else.
+
+The inbound recommendation from §11 also stands unchanged: Airpay's IPN and
+return URLs must be registered against Yarnvia's own endpoints, not against a
+third-party relay.

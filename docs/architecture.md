@@ -1331,9 +1331,15 @@ is covered by tests.
 
 ## Callback and return endpoints
 
-Both live on Yarnvia's own domain. The integration is self-contained: nothing
-relays, proxies or forwards on Yarnvia's behalf, and neither endpoint calls out
-to any third party.
+Both inbound endpoints live on Yarnvia's own domain. Airpay posts to them
+directly; nothing proxies or relays *into* Yarnvia.
+
+Outbound is a separate matter, and it is deliberate. `/api/payments/callback`
+forwards each callback it receives to the merchant's existing KKChat collection
+endpoint, reproducing the behaviour established by the Frontiva integration so
+that the merchant's own reconciliation keeps seeing the events it always has.
+That relay is auxiliary and can never affect settlement — see "Callback relay"
+below.
 
     IPN     POST https://www.yarnvia.online/api/payments/callback
     Return  GET|POST https://www.yarnvia.online/api/payments/return
@@ -1342,11 +1348,44 @@ Both must be registered against Yarnvia's Airpay MID, because Airpay resolves
 them per-MID from its dashboard rather than from anything in the request — see
 "Return URL is dashboard-configured" below.
 
-> **`frontiva.online` and `kkchat.in` are not part of this architecture.**
-> Those URLs were supplied early in the project and were initially assumed to be
-> Yarnvia's callback chain. They are not: they belong to a **different, existing
-> integration**. Nothing in this codebase builds, calls, forwards to, proxies
-> through or depends on them, and nothing ever should.
+Neither `frontiva.online` nor `kkchat.in` belongs in Yarnvia's *inbound* chain:
+Airpay must be configured to post to Yarnvia directly rather than through a third
+party, so that the shopper reaches a confirmation page and settlement is driven
+by Order Confirmation rather than by whoever called.
+
+## Callback relay
+
+`/api/payments/callback` forwards to the merchant's existing endpoint, after it
+has settled the order:
+
+    POST https://kkchat.in/callback/cpm/arp/collection
+    Content-Type: application/json
+    Accept:       application/json
+    Body:         a JSON OBJECT of the Airpay fields, values left as strings
+
+Overridable with `KKCHAT_CALLBACK_URL`; `off` disables it entirely. The
+destination is the one recorded in `payment.md` §11 and is not invented here.
+
+Three properties make this safe to run inside a money path:
+
+1. **It runs after settlement.** By the time the relay is attempted, the order
+   has already been verified and written. A KKChat outage cannot reorder,
+   corrupt or roll back anything.
+2. **It cannot throw.** Timeout, DNS failure, TLS failure, 4xx, 5xx — every
+   branch in `_lib/relay.ts` resolves to a log line. There is no path from a
+   relay failure to a payment failure.
+3. **It never retries.** Airpay re-delivers callbacks on its own schedule if it
+   does not get a 200; retrying here would multiply that traffic.
+
+It is bounded by a 5s timeout — shorter than the gateway timeouts, because
+settlement is already done and every millisecond is added latency on a response
+Airpay is waiting for — and by field-count and value-length caps, since the
+inbound endpoint is public and must not become a way to push bulk content at a
+third party.
+
+The body is `JSON.stringify`'d exactly once, so it is a JSON object rather than a
+JSON string containing JSON — a distinction the receiving end parses very
+differently, and one the tests assert directly.
 
 ## Testing
 

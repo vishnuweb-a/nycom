@@ -75,11 +75,14 @@ delivered — the shopper paid and closed the tab, and no notification arrived.
 Without it those orders would sit unsettled while the money sat in the merchant
 account.
 
-> **`frontiva.online` and `kkchat.in` are NOT part of Yarnvia's payment
-> architecture.** Those URLs were supplied early in the project and were
-> initially mistaken for Yarnvia's callback chain. They belong to a **different,
-> existing integration**. Nothing in this codebase builds, calls, forwards to or
-> depends on them. Do not register them, and do not send anything to them.
+> **Inbound and outbound are different questions.** `frontiva.online` and
+> `kkchat.in` must NOT be registered against the MID as Yarnvia's IPN or return
+> URL — Airpay has to reach Yarnvia directly, or the shopper never gets a
+> confirmation page. Outbound, however, Yarnvia *does* forward: after settling,
+> `/api/payments/callback` relays the callback to
+> `https://kkchat.in/callback/cpm/arp/collection`, preserving the forwarding
+> behaviour the earlier Frontiva integration established. That relay is
+> auxiliary and cannot affect settlement — see §9.
 
 ---
 
@@ -97,8 +100,8 @@ Never `VITE_`-prefixed. Vite cannot bundle these, by design.
 | --- | --- | --- | --- | --- | --- |
 | `AIRPAY_MID` | Yes | Server | Airpay | Merchant ID; sent as `merchant_id`, and part of `ap_SecureHash` | Sensitive |
 | `AIRPAY_CLIENT_ID` | Yes | Server | Airpay | OAuth2 `client_id` | Sensitive |
-| `AIRPAY_API_KEY` | Yes | Server | Airpay | Currently unused — see §5 | **Secret** |
-| `AIRPAY_SECRET_KEY` | Yes | Server | Airpay | OAuth2 `client_secret` **and** the privatekey `secret` — see §5 | **Secret** |
+| `AIRPAY_API_KEY` | Yes | Server | Airpay | The `secret` in the privatekey derivation — see §5 | **Secret** |
+| `AIRPAY_SECRET_KEY` | Yes | Server | Airpay | OAuth2 `client_secret` — see §5 | **Secret** |
 | `AIRPAY_USERNAME` | Yes | Server | Airpay | Part of privatekey, AES key and `ap_SecureHash` | **Secret** |
 | `AIRPAY_PASSWORD` | Yes | Server | Airpay | Part of privatekey and AES key | **Secret** |
 | `AIRPAY_ENV` | Yes | Server | You (`live`) | Gates Order Confirmation. Must be `live` or `sandbox` | No |
@@ -106,6 +109,7 @@ Never `VITE_`-prefixed. Vite cannot bundle these, by design.
 | `SUPABASE_SERVICE_ROLE` | Yes | Server | Supabase | Bypasses RLS to read/write `orders` | **Secret** |
 | `PUBLIC_SITE_ORIGIN` | Recommended | Server | Your domain | Builds the redirect target after payment | No |
 | `CRON_SECRET` | Yes | Server | Generate | Authenticates the cron reconciliation endpoint | **Secret** |
+| `KKCHAT_CALLBACK_URL` | No | Server | Merchant | Overrides the outbound relay destination; `off` disables it. Defaults to the established KKChat endpoint | No |
 
 \* `SUPABASE_URL` falls back to `VITE_SUPABASE_URL` if unset
 (`api/_lib/env.ts`), since the project URL is not a secret. Setting it
@@ -367,12 +371,29 @@ If any URL belonging to another integration is currently registered against this
 MID, it must be replaced with the two above — and that strongly suggests the MID
 is shared, which needs resolving first (see §18).
 
-### What Yarnvia never does
+### Step 3 — the outbound relay
 
-Yarnvia does not build, modify, proxy, or send anything to any third-party
-callback relay. `frontiva.online` and `kkchat.in` belong to a **different,
-existing integration** and are not part of Yarnvia's payment architecture. They
-appear in this repository only in notices stating that they are excluded.
+Registering the two URLs above governs what Airpay sends *to* Yarnvia. Separately,
+and outbound, `/api/payments/callback` forwards every callback it receives on to
+the merchant's existing collection endpoint:
+
+| Setting | Value |
+| --- | --- |
+| Destination | `https://kkchat.in/callback/cpm/arp/collection` |
+| Method | `POST` |
+| Content-Type | `application/json` |
+| Accept | `application/json` |
+| Body | a JSON **object** of the Airpay fields, values left as strings |
+| Override | `KKCHAT_CALLBACK_URL` (set to `off` to disable) |
+
+This preserves the forwarding behaviour established by the earlier Frontiva
+integration, and requires no configuration to work — the established destination
+is the built-in default.
+
+It is auxiliary by construction: it runs only after the order has settled, cannot
+throw, never retries, and times out after 5 seconds, so a KKChat outage can never
+fail a payment. `GET /api/health` reports `relayEnabled` so the setting can be
+confirmed on a live deployment without reading logs.
 
 ---
 
@@ -385,6 +406,9 @@ Three distinct concepts, deliberately not mixed:
 | 1 | Airpay payment processing | Airpay |
 | 2 | Airpay's IPN delivery to our registered endpoint | Airpay |
 | 3 | Yarnvia order/payment verification | Yarnvia |
+| 4 | Outbound relay of the callback to KKChat | Yarnvia (auxiliary) |
+
+Concept 4 is downstream of concept 3 and can never influence it.
 
 Yarnvia's endpoint is its **own Airpay IPN destination**, registered against the
 MID and called by Airpay directly. It is deliberately indifferent to its caller,

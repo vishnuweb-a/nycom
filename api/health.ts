@@ -54,7 +54,15 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
     log.warn('health.env_incomplete', { detail: errorMessage(error) });
   }
 
-  sendJson(res, 200, { ok: true, commit, configured, airpayEnv });
+  /*
+   * Whether the outbound KKChat relay is active. A boolean only — the
+   * destination itself stays out of an unauthenticated response, since it is
+   * the merchant's infrastructure rather than ours to advertise.
+   */
+  const relay = process.env.KKCHAT_CALLBACK_URL?.trim().toLowerCase();
+  const relayEnabled = relay !== 'off' && relay !== 'disabled';
+
+  sendJson(res, 200, { ok: true, commit, configured, airpayEnv, relayEnabled });
 };
 
 export default withErrorHandling('health', handler);
