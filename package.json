@@ -13,6 +13,7 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc -b --noEmit",
     "seed": "node --env-file=.env scripts/seed.mjs",
+    "add-products": "node --env-file=.env scripts/add-products.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
