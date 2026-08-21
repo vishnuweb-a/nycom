@@ -1027,19 +1027,60 @@ strings.
 
 ## 18. Remaining Blockers / Unknowns
 
-Ordered by how much they block. The first two must be resolved by the client or
-in a dashboard — no code change can address them.
+Ordered by how much they block. The first must be resolved by Airpay — no code
+change can address it.
 
 ### Blockers
 
-1. **Airpay Success / Return URL destination for this MID — UNRESOLVED.**
-   If it points at the client's relay, customers never return to Yarnvia and see
-   no confirmation. Payments still settle via the sweep, but the experience is
-   broken. Requires a client decision (§8).
+1. **Order Confirmation responses cannot be decrypted — OPEN, and it is the one
+   thing stopping any order from settling.**
 
-2. **MID sharing — UNCONFIRMED.** The relay path suggests this MID may already
-   serve another merchant. Since return URLs are per-MID, a shared MID may mean
-   Yarnvia needs its own.
+   Confirmed against MID 366950 on 2026-08-21. `POST …/v4/api/verify/` with
+   `orderid` returns HTTP 200 and this body:
+
+   ```json
+   { "merchant_id": null, "response": "509361e8503ab0a0I9NZa9e97O0qW189…" }
+   ```
+
+   The `response` envelope follows the documented `encdata` layout exactly — 16
+   hexadecimal characters of IV, then 128 base64 characters decoding to 96
+   bytes, a clean multiple of the AES block size. It does **not** decrypt with
+   the key every *outbound* call uses and that Airpay accepts on those calls:
+
+   ```
+   key = md5(AIRPAY_USERNAME ~:~ AIRPAY_PASSWORD)   as 32 ASCII characters
+   iv  = the leading 16 hexadecimal characters      as 16 ASCII bytes
+   ```
+
+   So the format is understood and only the key is wrong. **Ask Airpay which
+   key Order Confirmation responses are encrypted under.** Do not guess: a
+   wrong guess that happens to produce parseable output would settle orders on
+   fabricated data.
+
+   Until it is answered, `verifyTransaction` returns `null` — its documented
+   "no answer" signal — and orders stay `initiated`. Nothing is marked paid,
+   and, since the fix below, nothing is marked failed either.
+
+   > **What this cost.** Before the fix, `verifyTransaction` returned a
+   > confirmation with every field `null`, and `settle.ts` compares
+   > `status !== AIRPAY_STATUS.SUCCESS`. `null !== 200`, so "Airpay did not
+   > tell us" was recorded as "Airpay said it failed" and the order was
+   > terminally marked `failed`. Order `YV-3200A-2AB47227` — a genuine ₹81 UPI
+   > payment, Airpay transaction `2051234202`, shown as **Success** on Airpay's
+   > own dashboard — was failed that way. The eight `failed` orders from
+   > 2026-08-14, all with `ap_transactionid` null, carry the same signature and
+   > should be treated as unverified rather than as genuine failures.
+   >
+   > Both directions are now guarded: `verifyTransaction` refuses to return a
+   > statusless confirmation, and `settleOrder` refuses to act on a `null`
+   > status. Watch for `airpay.verify.no_status` in the Vercel logs — its
+   > `envelopeDecrypted` field separates a decryption problem from a
+   > field-naming one.
+
+2. **MID sharing — UNCONFIRMED.** The `/callback/cpm/arp/collection` path
+   registered against this MID is the same path the earlier Frontiva/KKChat
+   integration used, which suggests the MID may already serve another merchant.
+   Since both URLs are per-MID, a shared MID may mean Yarnvia needs its own.
 
 3. **Supabase migration not applied.** §11.
 
@@ -1056,11 +1097,13 @@ in a dashboard — no code change can address them.
    Confirm whether a custom domain is intended before go-live; if so, change all
    four places listed in §12 together. §12.
 
-6. **No Vercel Function has ever executed.** The Airpay libraries are unit
-   tested, but no handler has run in a real runtime, and OAuth has never been
-   exercised against the live endpoint.
+6. ~~**No Vercel Function has ever executed.**~~ Resolved. Functions run in
+   production, OAuth succeeds against the live endpoint, and
+   `/callback/cpm/arp/collection` has been exercised end to end.
 
-7. **No live payment has been made.** Requires explicit authorization.
+7. ~~**No live payment has been made.**~~ Resolved. One live ₹81 UPI payment
+   succeeded (`YV-3200A-2AB47227`, Airpay transaction `2051234202`). It is not
+   yet settled in Supabase — see blocker 1.
 
 ### Known uncertainties — documented, non-blocking
 
