@@ -824,3 +824,221 @@ describe('POST /callback/cpm/arp/collection — the native { merchant_id, respon
     expect(captured.body).toEqual({ received: true, outcome: 'paid' });
   });
 });
+
+// ─── The native envelope with a nested plaintext, end to end ────────────────
+
+/**
+ * `{ merchant_id, response }` whose plaintext nests the callback under `data`.
+ *
+ * The delivery that followed the envelope fix was logged
+ * `payment.callback.unparseable` with `envelope: decrypted`,
+ * `merchantCheck: match`, `parserFailure: no_order_reference`: the blob opened,
+ * it was addressed to this merchant, and the parser found no reference in a
+ * plaintext it had only read the top level of. Every flat shape above already
+ * settles, so what was refused was not flat.
+ *
+ * The layout is the v4 one this repository already handles in `airpay.ts` —
+ * `{status_code, response_code, status, message, data: {…}}`, which
+ * `verifyTransaction` reads through `record.data`. The inner field names are
+ * the real captured IPN's.
+ *
+ * These run the real parser and the real settlement against the stubbed
+ * gateway, so what they pin is the wiring: that this shape reaches
+ * `settleOrder`, and that reaching it changes nothing about who decides the
+ * payment.
+ */
+describe('POST /callback/cpm/arp/collection — a nested plaintext inside the envelope', () => {
+  /**
+   * Seals a plaintext the flat `encrypt()` cannot express, checked against the
+   * production `decrypt()` first so no fixture can assert a format the shipped
+   * code does not implement.
+   */
+  const seal = async (plaintext: string): Promise<string> => {
+    const { createCipheriv, createHash, randomBytes } = await import('node:crypto');
+    const { decrypt } = await import('../../../_lib/airpay.js');
+
+    const key = Buffer.from(
+      createHash('md5').update('test-user~:~test-pass', 'utf8').digest('hex'),
+      'ascii',
+    );
+    const iv = randomBytes(8).toString('hex').slice(0, 16);
+    const cipher = createCipheriv('aes-256-cbc', key, Buffer.from(iv, 'ascii'));
+    const blob = iv + cipher.update(plaintext, 'utf8', 'base64') + cipher.final('base64');
+
+    expect(decrypt(blob)).toBe(plaintext);
+
+    return blob;
+  };
+
+  const nested = async (fields: Record<string, string> = { ...CALLBACK }) => ({
+    merchant_id: '366950',
+    response: await seal(
+      JSON.stringify({
+        status_code: 200,
+        response_code: '00',
+        status: 'success',
+        message: 'Transaction fetched',
+        data: fields,
+      }),
+    ),
+  });
+
+  it('settles the IPN leg posted as application/json', async () => {
+    const captured = await post({
+      body: await nested(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('paid');
+    expect(rows[0]?.ap_transactionid).toBe('AP-REAL-1');
+    expect(captured.body).toEqual({ received: true, outcome: 'paid' });
+  });
+
+  it('settles the browser leg posted as application/x-www-form-urlencoded', async () => {
+    const form = new URLSearchParams(await nested()).toString();
+
+    const captured = await post({
+      body: form,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('paid');
+    expect(captured.body).toEqual({ received: true, outcome: 'paid' });
+  });
+
+  /*
+   * The rule the whole integration rests on, restated for the nested shape. The
+   * plaintext is sealed under the merchant's own key and says SUCCESS; the
+   * gateway, asked directly, says otherwise. The gateway wins.
+   */
+  it('does not let a nested TRANSACTIONSTATUS=200 mark the order paid', async () => {
+    gatewaySays = { transactionStatus: 400, amount: 81 };
+
+    const captured = await post({
+      body: await nested({ ...CALLBACK, TRANSACTIONSTATUS: '200', MESSAGE: 'SUCCESS' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('failed');
+    expect(captured.body).toEqual({ received: true, outcome: 'failed' });
+  });
+
+  it('leaves the order untouched when the gateway cannot be read', async () => {
+    gatewaySays = null;
+
+    const captured = await post({
+      body: await nested(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(captured.body).toEqual({ received: true, outcome: 'pending' });
+  });
+
+  it('holds the order for review when the gateway settled a different amount', async () => {
+    gatewaySays = { transactionStatus: 200, amount: 1 };
+
+    const captured = await post({
+      body: await nested(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('requires_review');
+    expect(captured.body).toEqual({ received: true, outcome: 'amount_mismatch' });
+  });
+
+  /*
+   * The hash is computed over the transaction's own MESSAGE. If the wrapper's
+   * `message` were read as the transaction's, a genuine payment would fail this
+   * check and strand.
+   */
+  it('fails closed on a nested payload whose ap_SecureHash does not check out', async () => {
+    const captured = await post({
+      body: await nested({ ...CALLBACK, ap_SecureHash: '1' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(captured.body).toEqual({ received: true, outcome: 'hash_mismatch' });
+  });
+
+  it('verifies a correct ap_SecureHash against the nested MESSAGE, not the wrapper', async () => {
+    const { crc32 } = await import('../../../_lib/airpay.js');
+
+    // The proven construction from `verifySecureHash`: the merchant's own
+    // reference first, the MID and username in the middle, the VPA appended
+    // last. Built here from the *transaction's* MESSAGE.
+    const ap_SecureHash = crc32(
+      [
+        CALLBACK.TRANSACTIONID,
+        CALLBACK.APTRANSACTIONID,
+        CALLBACK.AMOUNT,
+        CALLBACK.TRANSACTIONSTATUS,
+        CALLBACK.MESSAGE,
+        '366950',
+        'test-user',
+        CALLBACK.CUSTOMERVPA,
+      ].join(':'),
+    );
+
+    const captured = await post({
+      body: await nested({ ...CALLBACK, ap_SecureHash }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('paid');
+    expect(captured.body).toEqual({ received: true, outcome: 'paid' });
+  });
+
+  it('refuses a nested plaintext addressed to another merchant, without settling', async () => {
+    const captured = await post({
+      body: { ...(await nested()), merchant_id: '999999' },
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(captured.body).toEqual({ received: true });
+  });
+
+  it('settles exactly once across a repeated delivery of the same envelope', async () => {
+    const first = await post({
+      body: await nested(),
+      headers: { 'content-type': 'application/json' },
+    });
+    const second = await post({
+      body: await nested(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(transitions).toBe(1);
+    expect(first.body).toEqual({ received: true, outcome: 'paid' });
+    expect(second.body).toEqual({ received: true, outcome: 'already_settled' });
+  });
+
+  it('relays the decrypted fields to KKChat, and only after settlement', async () => {
+    const sequence: string[] = [];
+
+    fetchMock.mockImplementation(() => {
+      sequence.push(`relay:${rows[0]?.payment_status ?? 'gone'}`);
+
+      return Promise.resolve({ ok: true, status: 200 });
+    });
+
+    const body = await nested();
+
+    await post({ body, headers: { 'content-type': 'application/json' } });
+
+    expect(sequence).toEqual(['relay:paid']);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+
+    expect(url).toBe('https://kkchat.in/callback/cpm/arp_frontiva/collection');
+    expect(JSON.parse(init.body as string)).toMatchObject(CALLBACK);
+    // The sealed blob is not what KKChat receives.
+    expect(init.body as string).not.toContain(body.response);
+  });
+});

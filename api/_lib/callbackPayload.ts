@@ -233,6 +233,143 @@ const flatten = (source: unknown): Fields => {
   return { lookup, raw };
 };
 
+/**
+ * How deep the decrypted plaintext is walked, and how many values are visited.
+ *
+ * A callback is a dozen short scalars, so both bounds sit far above anything
+ * genuine. They exist only so that a pathological plaintext cannot make the
+ * walk expensive.
+ */
+const MAX_PLAINTEXT_DEPTH = 6;
+const MAX_PLAINTEXT_NODES = 512;
+
+/**
+ * A nested value that arrived as a JSON *string*, parsed — or `null`.
+ *
+ * v4 double-encodes some payloads. `findField` in `airpay.ts` records this
+ * against the live gateway: a `data` field arriving as `"{\"…\":…}"` is a
+ * string rather than an object, and every `typeof x === 'object'` check skips
+ * it silently.
+ */
+const parseNested = (value: string): unknown => {
+  const trimmed = value.trim();
+
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+
+    return typeof parsed === 'object' && parsed !== null ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Flattens a decrypted plaintext, including whatever v4 nested its fields
+ * under.
+ *
+ * `flatten` reads top-level scalars only, which is everything a form-encoded
+ * payload has. A v4 *JSON* body is not flat: `airpay.ts` records the confirmed
+ * shape as `{status_code, response_code, status, message, data: {…}}`, and
+ * `verifyTransaction` reads the fields it needs out of `record.data` for
+ * exactly that reason. Against a body of that shape `flatten` keeps the outer
+ * scalars, drops `data` because it is an object, and never sees the order
+ * reference inside it — which is the production failure exactly:
+ * `envelope: decrypted`, `merchantCheck: match`,
+ * `parserFailure: no_order_reference`.
+ *
+ * So the plaintext is walked rather than assumed flat, the same way `findField`
+ * already walks a v4 response body, nested JSON strings included. No field name
+ * and no layout is invented here: the names looked up afterwards are unchanged,
+ * and this only stops the walk giving up before reaching them.
+ *
+ * Breadth-first, and a nested statement of a name wins over a shallower one.
+ * That is the precedence `verifyTransaction` already applies to a v4 body —
+ * `data.orderid ?? data.ORDERID ?? record.orderid` — and it is the right way
+ * round: the outer object is the transport wrapper, whose own `status` and
+ * `message` describe the delivery, while the callback's own fields are the ones
+ * inside it. Reading the wrapper's `message` as the transaction's would also
+ * feed the wrong string to `verifySecureHash` and strand a genuine payment.
+ *
+ * This widens what can be *read* out of a plaintext that decryption has already
+ * authenticated; it grants nothing. Whatever reference comes out is still only
+ * a question put to `settleOrder`, which asks Airpay directly before any order
+ * changes state.
+ */
+const flattenDeep = (source: unknown): Fields => {
+  const lookup = new Map<string, string>();
+  const raw: Record<string, string> = {};
+  /** Which key of `raw` currently holds each case-insensitive name. */
+  const held = new Map<string, string>();
+
+  const record = (key: string, value: string): void => {
+    const name = key.toLowerCase();
+    const previous = held.get(name);
+
+    // A name is carried once. Without this a wrapper's `message` and the
+    // payload's `MESSAGE` would both reach the relay, one of them stale.
+    if (previous !== undefined && previous !== key) {
+      delete raw[previous];
+    }
+
+    held.set(name, key);
+    lookup.set(name, value);
+    raw[key] = value;
+  };
+
+  let level: unknown[] = [source];
+  let visited = 0;
+
+  for (let depth = 0; depth <= MAX_PLAINTEXT_DEPTH && level.length > 0; depth += 1) {
+    const next: unknown[] = [];
+
+    for (const value of level) {
+      visited += 1;
+
+      if (visited > MAX_PLAINTEXT_NODES) {
+        return { lookup, raw };
+      }
+
+      if (typeof value === 'string') {
+        const nested = parseNested(value);
+
+        if (nested !== null) {
+          next.push(nested);
+        }
+
+        continue;
+      }
+
+      if (Array.isArray(value)) {
+        next.push(...(value as unknown[]));
+
+        continue;
+      }
+
+      if (typeof value !== 'object' || value === null) {
+        continue;
+      }
+
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof entry === 'string' || typeof entry === 'number') {
+          record(key, String(entry));
+        }
+
+        if (typeof entry === 'string' || (typeof entry === 'object' && entry !== null)) {
+          next.push(entry);
+        }
+      }
+    }
+
+    level = next;
+  }
+
+  return { lookup, raw };
+};
+
 /** Merges two field sets, with `override` winning on conflict. */
 const merge = (base: Fields, override: Fields): Fields => ({
   lookup: new Map([...base.lookup, ...override.lookup]),
@@ -329,7 +466,7 @@ const decryptFormMangled = (sealed: string): string | null =>
 /**
  * Opens the envelope, if there is one.
  *
- * Two things this does that the previous single `JSON.parse` did not:
+ * Three things this does that the previous single `JSON.parse` did not:
  *
  * 1. **The plaintext is decoded, not assumed.** `decodeRawBody` is the decoder
  *    this module already applies to raw request bodies, and it reads JSON *and*
@@ -343,6 +480,17 @@ const decryptFormMangled = (sealed: string): string | null =>
  *    the callback was logged with the same generic reason as a body that never
  *    arrived. Those need opposite fixes, and on a live gateway each wrong guess
  *    costs another real payment to observe.
+ *
+ * 3. **The plaintext is not assumed flat.** `flatten` reads top-level scalars
+ *    only. A v4 JSON body nests its fields — `airpay.ts` records the confirmed
+ *    shape as `{status_code, response_code, status, message, data: {…}}`, and
+ *    `verifyTransaction` reaches into `record.data` for precisely that reason —
+ *    so an object-valued `data` was dropped whole and the order reference
+ *    inside it was never looked at. That is the production failure exactly:
+ *    the envelope opened, the merchant matched, and the parser reported
+ *    `no_order_reference` about fields it had discarded before looking.
+ *    `flattenDeep` walks the plaintext the same way `findField` already walks a
+ *    v4 response, so the field names below are found wherever v4 puts them.
  *
  * The cipher itself is untouched: `decrypt` from `airpay.ts` is the single
  * implementation, and there is deliberately no second one here.
@@ -370,7 +518,7 @@ const openEnvelope = (
 
   // Replaces rather than merges, so a genuine captured envelope cannot be
   // paired with plaintext fields of an attacker's choosing.
-  return { fields: flatten(decoded), state: 'decrypted' };
+  return { fields: flattenDeep(decoded), state: 'decrypted' };
 };
 
 /**

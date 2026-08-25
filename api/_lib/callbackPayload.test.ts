@@ -744,6 +744,247 @@ describe('the native Airpay callback envelope', () => {
 });
 
 /**
+ * A decrypted plaintext whose fields are nested rather than flat.
+ *
+ * The production line this suite exists for reported `envelope: decrypted`,
+ * `merchantCheck: match` and `parserFailure: no_order_reference` — the blob
+ * opened, it was addressed to us, and the parser then found no order reference
+ * in it. Every flat shape above already parses, so what was refused was not
+ * flat.
+ *
+ * The nesting pinned here is not invented for the test. It is the v4 response
+ * layout this repository already records and already handles elsewhere:
+ * `unwrapEnvelope` in `airpay.ts` documents the confirmed decrypted shape as
+ * `{status_code, response_code, status, message, data: {…}}`,
+ * `verifyTransaction` reads the fields it needs out of `record.data`, and
+ * `findField` walks nested JSON *strings* because v4 double-encodes some
+ * payloads. The field names inside are the ones from the real production IPN in
+ * `docs/AIRPAY_YARNVIA_VERIFICATION.md` §6.3, unchanged.
+ *
+ * Every fixture is sealed with the production `encrypt()`/`decrypt()` pair, so
+ * nothing here asserts a cryptographic format the shipped code does not
+ * implement.
+ */
+describe('a decrypted plaintext whose fields are nested', () => {
+  const MID = 'TESTMID';
+
+  /** Field names taken verbatim from the captured production IPN. */
+  const NATIVE = {
+    MERCID: MID,
+    TRANSACTIONID: 'YV-ABJ5T-3C1DDCEF',
+    APTRANSACTIONID: '2051234999',
+    AMOUNT: '81.00',
+    TRANSACTIONSTATUS: '200',
+    MESSAGE: 'Transaction Successful',
+    CUSTOMERVPA: 'someone@okbank',
+    ap_SecureHash: '1234567890',
+  } as const;
+
+  const envelope = async () => (await import('./callbackPayload.js')).parseCallbackEnvelope;
+
+  const typed = (body: unknown, contentType = 'application/json'): VercelRequest =>
+    ({
+      body,
+      query: {},
+      method: 'POST',
+      headers: { 'content-type': contentType },
+    }) as VercelRequest;
+
+  /**
+   * Seals an arbitrary plaintext, checked against the real decryptor first.
+   *
+   * `encrypt()` takes a flat record and always emits JSON, so it cannot express
+   * a nested plaintext. Rather than assert a layout on trust, everything built
+   * here is fed to the production `decrypt()` and required to come back
+   * byte-for-byte — if the envelope format ever diverged from the real one,
+   * these tests would fail rather than quietly test a fiction.
+   */
+  const seal = async (plaintext: string): Promise<string> => {
+    const { createCipheriv, createHash, randomBytes } = await import('node:crypto');
+    const { decrypt } = await import('./airpay.js');
+
+    const key = Buffer.from(
+      createHash('md5').update('test-user~:~test-pass', 'utf8').digest('hex'),
+      'ascii',
+    );
+    const iv = randomBytes(8).toString('hex').slice(0, 16);
+    const cipher = createCipheriv('aes-256-cbc', key, Buffer.from(iv, 'ascii'));
+    const blob = iv + cipher.update(plaintext, 'utf8', 'base64') + cipher.final('base64');
+
+    expect(decrypt(blob)).toBe(plaintext);
+
+    return blob;
+  };
+
+  /** The v4 envelope: an outer status wrapper with the callback under `data`. */
+  const wrapped = (fields: Record<string, string> = { ...NATIVE }) => ({
+    status_code: 200,
+    response_code: '00',
+    status: 'success',
+    message: 'Transaction fetched',
+    data: fields,
+  });
+
+  // ── The production shape, on both legs ────────────────────────────────────
+
+  it('finds the order reference under `data` on the IPN leg', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(JSON.stringify(wrapped()));
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.apTransactionId).toBe('2051234999');
+    expect(result?.payload.amount).toBe('81.00');
+    expect(result?.payload.transactionStatus).toBe('200');
+    expect(result?.payload.message).toBe('Transaction Successful');
+    expect(result?.payload.customerVpa).toBe('someone@okbank');
+    expect(result?.payload.secureHash).toBe('1234567890');
+  });
+
+  it('finds it on the form-urlencoded browser leg too', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(JSON.stringify(wrapped()));
+    const form = new URLSearchParams({ merchant_id: MID, response }).toString();
+
+    const result = parseCallbackEnvelope(typed(form, 'application/x-www-form-urlencoded'));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.amount).toBe('81.00');
+  });
+
+  /*
+   * v4 double-encodes some payloads — `findField` in `airpay.ts` exists because
+   * of a `data` that arrived as a JSON string rather than an object. Every
+   * `typeof x === 'object'` check skips that silently.
+   */
+  it('reads a `data` that arrived as a JSON string rather than an object', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(
+      JSON.stringify({ ...wrapped(), data: JSON.stringify({ ...NATIVE }) }),
+    );
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.amount).toBe('81.00');
+  });
+
+  it('reads a callback carried in a single-entry list under `data`', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(JSON.stringify({ ...wrapped(), data: [{ ...NATIVE }] }));
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+  });
+
+  /*
+   * The precedence `verifyTransaction` already applies to a v4 body:
+   * `data.orderid ?? data.ORDERID ?? record.orderid`. The outer object is the
+   * transport wrapper — its `status` and `message` describe the delivery — and
+   * the transaction's own fields are the ones inside it.
+   */
+  it('prefers the nested statement of a name over the wrapper around it', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(
+      JSON.stringify({
+        TRANSACTIONID: 'YV-WRAP-000001',
+        message: 'Transaction fetched',
+        data: { TRANSACTIONID: 'YV-DEEP-0000002', AMOUNT: '81.00', MESSAGE: 'SUCCESS' },
+      }),
+    );
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }));
+
+    expect(result?.payload.orderRef).toBe('YV-DEEP-0000002');
+    expect(result?.payload.amount).toBe('81.00');
+    expect(result?.payload.message).toBe('SUCCESS');
+  });
+
+  /*
+   * `MESSAGE` feeds `verifySecureHash`, and the wrapper's own `message` is not
+   * the string Airpay hashed. Carrying both would put a stale value in front of
+   * the relay as well.
+   */
+  it('carries the payload MESSAGE, not the wrapper message, and carries it once', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(JSON.stringify(wrapped()));
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }));
+
+    expect(result?.payload.message).toBe('Transaction Successful');
+    expect(result?.fields.MESSAGE).toBe('Transaction Successful');
+    expect(result?.fields.message).toBeUndefined();
+  });
+
+  it('relays the nested fields flattened, and never the sealed blob', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(JSON.stringify(wrapped()));
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }));
+
+    expect(result?.fields).toMatchObject({ ...NATIVE });
+    expect(result?.fields.response).toBeUndefined();
+    expect(JSON.stringify(result?.fields)).not.toContain(response);
+  });
+
+  // ── Still failing closed ──────────────────────────────────────────────────
+
+  it('still refuses a plaintext that states no order reference at any depth', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(
+      JSON.stringify({ status: 'success', data: { AMOUNT: '81.00', MESSAGE: 'ok' } }),
+    );
+
+    expect(parseCallbackEnvelope(typed({ merchant_id: MID, response }))).toBeNull();
+  });
+
+  it('still refuses a malformed envelope carrying a nested plaintext shape', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    expect(
+      parseCallbackEnvelope(typed({ merchant_id: MID, response: 'not-an-airpay-envelope' })),
+    ).toBeNull();
+  });
+
+  it('still refuses a nested plaintext addressed to another merchant', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(JSON.stringify(wrapped()));
+
+    expect(parseCallbackEnvelope(typed({ merchant_id: '999999', response }))).toBeNull();
+  });
+
+  /*
+   * The walk is bounded, so a plaintext that decryption authenticated but that
+   * is pathologically deep cannot make parsing expensive. Well beyond anything
+   * a callback of a dozen scalars produces.
+   */
+  it('stops walking beyond its depth bound rather than searching forever', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    let deep: Record<string, unknown> = { TRANSACTIONID: 'YV-DEEP-0000003' };
+
+    for (let level = 0; level < 12; level += 1) {
+      deep = { data: deep };
+    }
+
+    const response = await seal(JSON.stringify(deep));
+
+    expect(parseCallbackEnvelope(typed({ merchant_id: MID, response }))).toBeNull();
+  });
+});
+
+/**
  * The failure categories attached to `payment.callback.unparseable`.
  *
  * The production line carried `decodedKeys: merchant_id,response` and nothing
