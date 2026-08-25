@@ -25,8 +25,23 @@ import { log } from '../../../_lib/log.js';
  * SPA catch-all rewrite in `vercel.json` and was served by the static file
  * server: a GET returned `index.html`, and Airpay's POST was answered `405
  * Method Not Allowed` with an empty body. Order `YV-3200A-2AB47227` — a real,
- * successful ₹81 UPI payment, Airpay transaction 2051234202 — is still sitting
- * at `payment_status = initiated` because of exactly that.
+ * successful ₹81 UPI payment, Airpay transaction 2051234202 — was stranded by
+ * exactly that.
+ *
+ * That order is NOT `initiated`, as this note previously claimed. When the
+ * route was fixed its callback was replayed, reached verification while the
+ * Order Confirmation response was still unreadable, and the pre-21accb1
+ * `status !== SUCCESS` comparison recorded "Airpay did not tell us" as
+ * "Airpay said failed". Production shows `payment_status = failed`,
+ * `ap_transactionid = null`, `ap_verified_at = 2026-08-21T16:17:42Z`.
+ *
+ * `failed` is in `settle.ts`'s TERMINAL set, so the order is now frozen: a
+ * further callback returns `already_settled`, `payments/reconcile.ts` only
+ * sweeps `initiated`/`pending`, and the success-page poll treats it as settled.
+ * Nothing in the running system can recover it — it needs a one-row correction
+ * back to `initiated`, which 21accb1 called for and which has not been done.
+ * Until then Airpay will keep reporting a settled payment that Yarnvia shows as
+ * failed, and the cause is this row, not callback delivery.
  *
  * The dashboard is not ours to change, so the application moves to meet it.
  *
@@ -74,8 +89,8 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
   /*
    * Relayed on both legs, deliberately.
    *
-   * Under the previous integration `kkchat.in/callback/cpm/arp/collection` was
-   * itself registered as the Response *and* IPN URL, so KKChat already saw both
+   * Under the previous integration KKChat's own collection endpoint was itself
+   * registered as the Response *and* IPN URL, so KKChat already saw both
    * deliveries for a payment. Forwarding both reproduces what it has always
    * received. The alternative — relaying only traffic we classify as an IPN —
    * fails silently and completely in the case where Airpay sends the browser

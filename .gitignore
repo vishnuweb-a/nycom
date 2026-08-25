@@ -41,3 +41,9 @@ node_modules/.tmp/
 # Do not commit source photography
 clothes/
 children/
+
+# Local credential files pulled down by `vercel link` / `vercel env pull`.
+# Deliberately NOT the bare `.env*` that `vercel link` appends: that glob also
+# matches the tracked `.env.example`, which is the one env file that must stay
+# visible.
+.env*.local

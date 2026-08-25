@@ -357,10 +357,13 @@ proxy) ever posts back to Yarnvia's public callback, nothing stops a loop. Add a
 2. **One relay per payment, or two?** Yarnvia forwards **both** the browser leg
    and the IPN leg. **UNKNOWN** whether KKChat deduplicates.
 
-### ⚠ Do not copy Frontiva's destination
-Frontiva posts to `https://kkchat.in/callback/cpm/arp_frontiva/collection`.
-Yarnvia's destination is `https://kkchat.in/callback/cpm/arp/collection`, the
-value the team supplied. Different path — do not conflate them.
+### ✅ Destination corrected to match Frontiva (2026-08-25)
+This section previously said "do not copy Frontiva's destination". That was
+wrong. Yarnvia now posts to the same path Frontiva does,
+`https://kkchat.in/callback/cpm/arp_frontiva/collection`, confirmed by the
+client. The previous `.../cpm/arp/collection` was accepted with `200 success`
+and silently discarded — KKChat routes only on the trailing `/collection`. See
+`docs/AIRPAY_YARNVIA_ARCHITECTURE.md` §6 for the probe evidence.
 
 ### Tests (present, `relay.test.ts`, 227 lines)
 Default destination; override; `off`; POST + JSON headers; object-not-string body;

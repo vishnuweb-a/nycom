@@ -43,7 +43,7 @@ public URL is part of this integration, and none may be invented.
 | Merchant domain | `https://www.yarnvia.online` | — |
 | **Response URL** (Success/Failed) | `https://www.yarnvia.online/callback/cpm/arp/collection` | Airpay redirects the **customer's browser** here |
 | **IPN / Webhook URL** | `https://www.yarnvia.online/callback/cpm/arp/collection` | Airpay's **server** POSTs here |
-| KKChat relay destination | `https://kkchat.in/callback/cpm/arp/collection` | **Yarnvia** POSTs here, outbound only |
+| KKChat relay destination | `https://kkchat.in/callback/cpm/arp_frontiva/collection` | **Yarnvia** POSTs here, outbound only |
 
 ### 1.1 How these three relate
 
@@ -507,11 +507,28 @@ lines and nothing else. **PROVEN.**
    Response *and* IPN URL. That means **two relays per payment** where Frontiva
    sends one per delivery it receives. Whether KKChat deduplicates is **UNKNOWN**.
 
-3. **Destination path differs from Frontiva.** Frontiva posts to
-   `https://kkchat.in/callback/cpm/arp_frontiva/collection` (note `arp_frontiva`).
-   Yarnvia posts to `https://kkchat.in/callback/cpm/arp/collection`, which is the
-   value the team supplied for this integration. **Do not copy Frontiva's path.**
-   **PROVEN** on both sides.
+3. ~~**Destination path differs from Frontiva.**~~ **RESOLVED 2026-08-25 — this
+   guidance was wrong and has been reversed.** Yarnvia now posts to
+   `https://kkchat.in/callback/cpm/arp_frontiva/collection`, the same path as
+   Frontiva, confirmed by the client.
+
+   The earlier `.../cpm/arp/collection` was the value the team supplied, and
+   relaying to it delivered nothing. KKChat routes only on the trailing
+   `/collection`; the middle segment attributes the callback to a source
+   integration, and an unrecognised one is swallowed rather than refused:
+
+   | Probe | Response |
+   | --- | --- |
+   | `GET /callback/cpm/arp/collection` | `200 success` |
+   | `GET /callback/cpm/arp_frontiva/collection` | `200 success` |
+   | `GET /callback/cpm/DEFINITELY_NOT_A_REAL_PATH_xyz/collection` | `200 success` |
+   | `GET /callback/cpm/arp/nonsense` | `404 Not Found` |
+
+   So every Yarnvia relay was answered `200`, logged
+   `payment.callback.forward.success`, and reached nobody. **A 200 from
+   `kkchat.in` is not evidence of delivery.** The destination is pinned by a
+   test in `api/_lib/relay.test.ts`, which is the only place a regression can
+   be caught.
 
 ---
 

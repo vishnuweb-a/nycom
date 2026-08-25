@@ -1,0 +1,33 @@
+# Files excluded from the Vercel deployment upload.
+#
+# ── Why this file exists ────────────────────────────────────────────────────
+#
+# Vercel's filesystem router turns every `.ts` file under `api/` into a public
+# serverless function, and it makes no exception for tests. `api/payments/
+# callback.test.ts` therefore deployed as the live route
+# `/api/payments/callback.test`, and `api/callback/cpm/arp/collection.test.ts`
+# as `/api/callback/cpm/arp/collection.test`. Both were confirmed reachable in
+# production on 2026-08-25, answering:
+#
+#     GET /api/payments/callback.test              -> 500 FUNCTION_INVOCATION_FAILED
+#     GET /api/callback/cpm/arp/collection.test    -> 500 FUNCTION_INVOCATION_FAILED
+#     (log: "Vitest mocker was not initialized in this environment")
+#
+# Three separate problems, on the endpoints that take money:
+#
+#   • vitest and every test double were traced into the deployed bundle,
+#     sitting alongside the real callback and settlement code;
+#   • two public URLs answered 500 rather than 404, which is a working
+#     signal to anything probing for live routes;
+#   • the 500s were emitted from the payment namespace, so genuine callback
+#     errors have to be picked out of noise that is not about payments at all.
+#
+# `api/_lib/*.test.ts` was never affected — Vercel already skips the
+# underscore-prefixed directory — which is precisely why this went unnoticed:
+# most of the suite lives there, and only the two endpoint-level test files
+# ever became routes.
+#
+# Excluding the tests from the upload does not weaken them. They run in CI and
+# locally through `npm test`, which reads the working tree, not the deployment.
+**/*.test.ts
+**/*.test.tsx

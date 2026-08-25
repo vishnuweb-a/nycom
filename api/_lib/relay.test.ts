@@ -15,7 +15,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * able to reach back and disturb a settled payment.
  */
 
-const DEFAULT_DESTINATION = 'https://kkchat.in/callback/cpm/arp/collection';
+/**
+ * Pinned, because it is not observable from anywhere else.
+ *
+ * KKChat answers `200 "success"` to any `/callback/cpm/<anything>/collection`,
+ * so a wrong middle segment produces a relay that logs
+ * `payment.callback.forward.success` and delivers nothing. Neither production
+ * logs nor the destination's own response can catch a regression here — this
+ * assertion is the only thing that can. See the note in `relay.ts`.
+ */
+const DEFAULT_DESTINATION = 'https://kkchat.in/callback/cpm/arp_frontiva/collection';
 
 /** A realistic Airpay callback, in the casing Airpay actually sends. */
 const AIRPAY_FIELDS = {

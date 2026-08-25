@@ -442,7 +442,7 @@ describe('POST /callback/cpm/arp/collection — the KKChat relay', () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 
-    expect(url).toBe('https://kkchat.in/callback/cpm/arp/collection');
+    expect(url).toBe('https://kkchat.in/callback/cpm/arp_frontiva/collection');
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
 
@@ -607,5 +607,31 @@ describe('vercel.json routes the public callback to this function', () => {
     // Without the negative lookahead the catch-all would swallow every
     // function route, not just this one.
     expect(config.rewrites[CATCH_ALL].source).toContain('(?!api/)');
+  });
+});
+
+/**
+ * The deployment surface Airpay's callbacks share.
+ *
+ * Vercel's filesystem router publishes every `.ts` file under `api/` as a
+ * function, tests included. This file itself deployed as the live route
+ * `/api/callback/cpm/arp/collection.test`, and its sibling as
+ * `/api/payments/callback.test`; both answered 500 in production on
+ * 2026-08-25, with vitest's own "mocker was not initialized" error, which put
+ * the test doubles for settlement in the same bundle as the real thing.
+ *
+ * `.vercelignore` is what keeps them out of the upload, and it is pinned here
+ * for the same reason the rewrite order above is: nothing in a type-check, a
+ * lint or a local test run can observe it, so a deletion would be invisible
+ * until the endpoints reappeared in production.
+ */
+describe('.vercelignore keeps the test suite out of the deployment', () => {
+  const ignored = readFileSync(new URL('../../../../.vercelignore', import.meta.url), 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'));
+
+  it.each(['**/*.test.ts', '**/*.test.tsx'])('excludes %s', (pattern) => {
+    expect(ignored).toContain(pattern);
   });
 });

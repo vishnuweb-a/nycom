@@ -22,15 +22,37 @@ import { errorMessage, log } from './log.js';
  */
 
 /**
- * The established destination, from the original integration brief recorded in
- * `docs/payment.md` §11: "forward all callback data received at
- * frontiva.online/… to our existing callback endpoint kkchat.in/…".
+ * The merchant's KKChat intake, as confirmed by the client on 2026-08-25.
  *
- * This value is deliberately not invented and not derived. It is the endpoint
- * the previous integration already posted to, and it is kept byte-for-byte.
+ * ── Why this is `arp_frontiva` and not `arp` ────────────────────────────────
+ *
+ * It was `https://kkchat.in/callback/cpm/arp/collection` until now, taken from
+ * the value supplied for this integration and recorded in `docs/payment.md`
+ * §11. The client reports never receiving those relays, and a probe of KKChat
+ * explains why. The middle path segment is a wildcard that KKChat uses to
+ * attribute a callback to a source integration, and an unrecognised one is
+ * accepted and discarded rather than rejected:
+ *
+ *     GET /callback/cpm/arp/collection                     -> 200 "success"
+ *     GET /callback/cpm/arp_frontiva/collection            -> 200 "success"
+ *     GET /callback/cpm/DEFINITELY_NOT_A_REAL_PATH_xyz/... -> 200 "success"
+ *     GET /callback/cpm/arp/nonsense                       -> 404
+ *
+ * Only the trailing `/collection` is routed. That is the whole failure: every
+ * relay Yarnvia has ever sent was answered `200 success`, `forwardCallback`
+ * logged `payment.callback.forward.success`, and nothing reached the merchant.
+ * A 200 from this host is not evidence of delivery, and no amount of log
+ * reading on our side could have shown it.
+ *
+ * `arp_frontiva` is the segment the merchant actually reads. It is the same one
+ * the Frontiva integration posts to — see `docs/AIRPAY_YARNVIA_ARCHITECTURE.md`
+ * §6, which recorded it as PROVEN on both sides and, on the strength of the
+ * then-supplied value, told us not to copy it. That instruction is now
+ * withdrawn: the client has confirmed this is the destination they want.
+ *
  * `KKCHAT_CALLBACK_URL` overrides it only if the merchant moves the endpoint.
  */
-const DEFAULT_DESTINATION = 'https://kkchat.in/callback/cpm/arp/collection';
+const DEFAULT_DESTINATION = 'https://kkchat.in/callback/cpm/arp_frontiva/collection';
 
 /**
  * Short, and deliberately shorter than the gateway timeouts in `airpay.ts`.
