@@ -1,6 +1,7 @@
 import type { VercelRequest } from '@vercel/node';
 
 import { decrypt } from './airpay.js';
+import { serverEnv } from './env.js';
 import type { LogFields } from './log.js';
 import type { CallbackPayload } from './settle.js';
 
@@ -8,9 +9,10 @@ import type { CallbackPayload } from './settle.js';
  * Parses an Airpay callback or return payload.
  *
  * Airpay posts `application/x-www-form-urlencoded` fields, and depending on the
- * configuration may wrap them in an encrypted `encdata` blob instead. Both
- * shapes are accepted, and field names are matched case-insensitively because
- * the documentation and the live payloads disagree about casing
+ * configuration may seal them in an encrypted envelope instead — `encdata`, or
+ * the native v4 `{merchant_id, response}` pair the live gateway actually sends.
+ * Every shape is accepted, and field names are matched case-insensitively
+ * because the documentation and the live payloads disagree about casing
  * (`TRANSACTIONID` vs `transactionid`).
  *
  * Everything returned here is untrusted input. Parsing it successfully says
@@ -202,41 +204,6 @@ export const hydrateRequestBody = async (req: VercelRequest): Promise<void> => {
 };
 
 /**
- * Safe metadata about a request whose body could not be read.
- *
- * The log line that fires when a callback is unparseable previously recorded
- * only the leg and the method, which cannot distinguish the three ways this
- * fails: a body the platform did not parse, an envelope that will not decrypt,
- * and field names we do not recognise. They need different fixes, and each
- * wrong guess costs another real payment to observe.
- *
- * Key names are included; values are never. Airpay's field names are not
- * secrets, and they are the single most useful thing to see — but the values
- * beside them are a customer's phone, email and VPA.
- */
-export const describeCallbackRequest = (req: VercelRequest): LogFields => {
-  const body: unknown = req.body;
-  const record = asRecord(body, header(req, 'content-type'));
-  const keys =
-    typeof record === 'object' && record !== null && !Array.isArray(record)
-      ? Object.keys(record)
-      : [];
-
-  return {
-    contentType: header(req, 'content-type') || '(none)',
-    bodyType: Buffer.isBuffer(body) ? 'buffer' : Array.isArray(body) ? 'array' : typeof body,
-    bodyLength: typeof body === 'string' ? body.length : null,
-    decodedFieldCount: keys.length,
-    // Bounded: names only, and never an unbounded list.
-    decodedKeys: keys.slice(0, 40).join(',') || '(none)',
-    queryKeys:
-      Object.keys(req.query ?? {})
-        .slice(0, 20)
-        .join(',') || '(none)',
-  };
-};
-
-/**
  * The scalar fields of an envelope, in both the forms downstream code needs.
  *
  * `lookup` is lower-cased for case-insensitive matching; `raw` keeps the casing
@@ -284,6 +251,251 @@ const pick = (fields: Map<string, string>, ...names: readonly string[]): string 
   return '';
 };
 
+// ─── The Airpay callback envelope ───────────────────────────────────────────
+
+/**
+ * Airpay does not always post its callback fields in the clear. The live
+ * gateway posts the *native* v4 envelope — two fields, and neither of them is
+ * an order reference:
+ *
+ *     { "merchant_id": "<MID>", "response": "<16 hex chars of IV><base64>" }
+ *
+ * That is the same layout `encdata` uses (see `airpay.ts`), and it arrived under
+ * `application/json` on the IPN leg and `application/x-www-form-urlencoded` on
+ * the browser leg. Both reached production and both were logged
+ * `payment.callback.unparseable`, because opening the envelope was attempted in
+ * one narrow way and failing at it was not reported at all.
+ *
+ * Nothing here decides whether an order is paid. Opening the envelope only
+ * recovers the order reference that lets `settleOrder` go and ask Airpay.
+ */
+
+/** Field names the sealed payload travels under, in precedence order. */
+const ENVELOPE_FIELDS = ['encdata', 'encresponse', 'response'] as const;
+
+/**
+ * The envelope-level merchant identifier — the one Airpay sends in the clear
+ * beside the ciphertext, and the same name `buildEnvelope` sends outbound.
+ *
+ * Deliberately *not* `MERCID`, which is a field of the callback payload rather
+ * than of the envelope, and which is left alone so every payload shape this
+ * suite already pins keeps working.
+ */
+const MERCHANT_FIELDS = ['merchant_id', 'merchantid'] as const;
+
+/** Names the merchant's own order reference travels under. */
+const ORDER_REF_FIELDS = ['TRANSACTIONID', 'transactionid', 'orderid', 'order_id'] as const;
+
+/** Whether an envelope was present, and whether it opened. */
+export type EnvelopeState =
+  /** No envelope — Airpay posted the fields in the clear. */
+  | 'absent'
+  /** An envelope that opened and whose plaintext decoded into fields. */
+  | 'decrypted'
+  /** An envelope our key will not open, or whose plaintext decoded to nothing. */
+  | 'unreadable';
+
+/** The verdict of the envelope-level merchant check. */
+export type MerchantCheck =
+  /** The request stated no merchant id, so there was nothing to compare. */
+  | 'absent'
+  | 'match'
+  | 'mismatch'
+  /** The environment is incomplete, so `AIRPAY_MID` could not be read. */
+  | 'unavailable';
+
+/** Why a callback was refused. A category, never a value. */
+export type ParserFailure =
+  'none' | 'merchant_mismatch' | 'envelope_unreadable' | 'no_order_reference';
+
+/**
+ * Second attempt at an envelope that arrived through a form decoder.
+ *
+ * The base64 half of the envelope contains `+`, and `+` is how
+ * `application/x-www-form-urlencoded` spells a space. A sender that does not
+ * percent-encode it — and the browser leg posts exactly that content type —
+ * hands us a blob with every `+` turned into a space. Node's base64 decoder
+ * then *skips* the whitespace rather than rejecting it, quietly shortening the
+ * ciphertext, and decryption fails with nothing to show for it.
+ *
+ * Repairing the transport is not the same as guessing at the cryptography. The
+ * key, the IV convention and the cipher are untouched; this runs only after an
+ * attempt on the bytes exactly as received has already failed; and if the
+ * repaired blob does not decrypt either, the callback is refused as before.
+ */
+const decryptFormMangled = (sealed: string): string | null =>
+  sealed.includes(' ') ? decrypt(sealed.replace(/ /g, '+')) : null;
+
+/**
+ * Opens the envelope, if there is one.
+ *
+ * Two things this does that the previous single `JSON.parse` did not:
+ *
+ * 1. **The plaintext is decoded, not assumed.** `decodeRawBody` is the decoder
+ *    this module already applies to raw request bodies, and it reads JSON *and*
+ *    form-urlencoded. Airpay's v4 protocol is form-encoded on every leg where
+ *    the encoding is documented, so committing to JSON was a guess — and a
+ *    wrong guess discarded the callback outright.
+ *
+ * 2. **A failure is reported rather than swallowed.** Previously `decrypt`
+ *    returning `null` fell through with no branch at all: the outer
+ *    `{merchant_id, response}` survived, the order-reference check failed, and
+ *    the callback was logged with the same generic reason as a body that never
+ *    arrived. Those need opposite fixes, and on a live gateway each wrong guess
+ *    costs another real payment to observe.
+ *
+ * The cipher itself is untouched: `decrypt` from `airpay.ts` is the single
+ * implementation, and there is deliberately no second one here.
+ */
+const openEnvelope = (
+  fields: Fields,
+): { readonly fields: Fields; readonly state: EnvelopeState } => {
+  const sealed = pick(fields.lookup, ...ENVELOPE_FIELDS);
+
+  if (sealed === '') {
+    return { fields, state: 'absent' };
+  }
+
+  const plaintext = decrypt(sealed) ?? decryptFormMangled(sealed);
+
+  if (plaintext === null) {
+    return { fields, state: 'unreadable' };
+  }
+
+  const decoded = decodeRawBody(plaintext);
+
+  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) {
+    return { fields, state: 'unreadable' };
+  }
+
+  // Replaces rather than merges, so a genuine captured envelope cannot be
+  // paired with plaintext fields of an attacker's choosing.
+  return { fields: flatten(decoded), state: 'decrypted' };
+};
+
+/**
+ * Compares the merchant id the request states against our own.
+ *
+ * A callback for another merchant is not ours to act on. Airpay resolves both
+ * the Response URL and the IPN URL per MID, and this path is the one the
+ * earlier Frontiva integration used against the same MID, so a foreign callback
+ * is a real possibility rather than a hypothetical one.
+ *
+ * Reading `AIRPAY_MID` needs a valid environment, and this module must never
+ * throw for hostile input, so an unreadable environment is reported as
+ * `unavailable` rather than raised. That cannot become a way in: with no
+ * environment there is no verification and no database, so `settleOrder` fails
+ * closed a step later regardless.
+ */
+const checkMerchant = (fields: Fields): MerchantCheck => {
+  const stated = pick(fields.lookup, ...MERCHANT_FIELDS);
+
+  if (stated === '') {
+    return 'absent';
+  }
+
+  try {
+    return stated.trim() === serverEnv().AIRPAY_MID.trim() ? 'match' : 'mismatch';
+  } catch {
+    return 'unavailable';
+  }
+};
+
+/** A callback request reduced to its fields and the reason it was refused. */
+interface Inspection {
+  readonly fields: Fields;
+  readonly envelope: EnvelopeState;
+  readonly merchant: MerchantCheck;
+  readonly failure: ParserFailure;
+}
+
+/**
+ * The whole read of one callback request, in the order the checks must happen.
+ *
+ * Shared by the parser and the diagnostic logger, so that the reason a callback
+ * was refused is the reason that gets logged rather than a second guess at it.
+ * Never throws.
+ */
+const inspect = (req: VercelRequest): Inspection => {
+  // Query and body are merged so the same parser serves the GET return leg and
+  // the POST webhook. Body wins on conflict, being the harder one to forge into
+  // a link someone could be tricked into visiting.
+  const outer = merge(flatten(req.query), flatten(asRecord(req.body, header(req, 'content-type'))));
+
+  // Before the cipher: a foreign merchant's envelope is never even opened.
+  const merchant = checkMerchant(outer);
+
+  if (merchant === 'mismatch') {
+    return { fields: outer, envelope: 'absent', merchant, failure: 'merchant_mismatch' };
+  }
+
+  const { fields, state } = openEnvelope(outer);
+
+  /*
+   * An envelope that will not open ends the read. It must not fall back to the
+   * outer fields: those are the ones a forger controls, and pairing a captured
+   * envelope with plaintext of their own is precisely what the
+   * replace-don't-merge rule exists to stop. The previous code fell through
+   * here and kept them.
+   */
+  if (state === 'unreadable') {
+    return { fields, envelope: state, merchant, failure: 'envelope_unreadable' };
+  }
+
+  const failure = pick(fields.lookup, ...ORDER_REF_FIELDS) === '' ? 'no_order_reference' : 'none';
+
+  return { fields, envelope: state, merchant, failure };
+};
+
+/**
+ * Safe metadata about a request whose body could not be read.
+ *
+ * The log line that fires when a callback is unparseable previously recorded
+ * only the leg and the method, which cannot distinguish the ways this fails: a
+ * body the platform did not parse, an envelope that will not decrypt, an
+ * envelope that opens onto something we cannot read, a callback for a merchant
+ * that is not us, and field names we do not recognise. They need different
+ * fixes, and each wrong guess costs another real payment to observe.
+ *
+ * Key names are included; values are never. Airpay's field names are not
+ * secrets, and they are the single most useful thing to see — but the values
+ * beside them are a customer's phone, email and VPA.
+ *
+ * `envelope`, `merchantCheck` and `parserFailure` are the three that separate the
+ * causes. The live gateway posts `{merchant_id, response}`, which decodes to two
+ * field names on every leg whatever goes wrong afterwards, so the field names
+ * alone cannot say whether the envelope would not open, opened onto something
+ * unreadable, or belonged to another merchant. All three are categories
+ * computed by the same `inspect` the parser uses — never a value, never the
+ * ciphertext, and never any part of the plaintext.
+ */
+export const describeCallbackRequest = (req: VercelRequest): LogFields => {
+  const body: unknown = req.body;
+  const record = asRecord(body, header(req, 'content-type'));
+  const keys =
+    typeof record === 'object' && record !== null && !Array.isArray(record)
+      ? Object.keys(record)
+      : [];
+
+  const { envelope, merchant, failure } = inspect(req);
+
+  return {
+    envelope,
+    merchantCheck: merchant,
+    parserFailure: failure,
+    contentType: header(req, 'content-type') || '(none)',
+    bodyType: Buffer.isBuffer(body) ? 'buffer' : Array.isArray(body) ? 'array' : typeof body,
+    bodyLength: typeof body === 'string' ? body.length : null,
+    decodedFieldCount: keys.length,
+    // Bounded: names only, and never an unbounded list.
+    decodedKeys: keys.slice(0, 40).join(',') || '(none)',
+    queryKeys:
+      Object.keys(req.query ?? {})
+        .slice(0, 20)
+        .join(',') || '(none)',
+  };
+};
+
 /** A parsed callback, plus the fields it was derived from. */
 export interface ParsedCallback {
   readonly payload: CallbackPayload;
@@ -302,34 +514,20 @@ export interface ParsedCallback {
  * callback URL — and callers must handle it without treating it as an error.
  */
 export const parseCallbackEnvelope = (req: VercelRequest): ParsedCallback | null => {
-  // Query and body are merged so the same parser serves the GET return leg and
-  // the POST webhook. Body wins on conflict, being the harder one to forge into
-  // a link someone could be tricked into visiting.
-  let fields = merge(flatten(req.query), flatten(asRecord(req.body, header(req, 'content-type'))));
+  const { fields, failure } = inspect(req);
 
-  // Encrypted envelope, when configured. The plaintext replaces the outer
-  // fields entirely rather than merging, so an attacker cannot pair a genuine
-  // encdata with unencrypted fields of their own choosing.
-  const encdata = pick(fields.lookup, 'encdata', 'encresponse', 'response');
-
-  if (encdata !== '') {
-    const plaintext = decrypt(encdata);
-
-    if (plaintext !== null) {
-      try {
-        fields = flatten(JSON.parse(plaintext));
-      } catch {
-        return null;
-      }
-    }
-  }
-
-  const orderRef = pick(fields.lookup, 'TRANSACTIONID', 'transactionid', 'orderid', 'order_id');
-
-  if (orderRef === '') {
+  /*
+   * Every refusal is a `null`, as it always was — the four categories differ only
+   * in the diagnostic `describeCallbackRequest` attaches, not in what the caller
+   * has to handle. A refusal here is never a payment decision: an order that is
+   * not settled by this callback is still settled by the reconciliation sweep or
+   * by the success page's polling, both of which go and ask Airpay directly.
+   */
+  if (failure !== 'none') {
     return null;
   }
 
+  const orderRef = pick(fields.lookup, ...ORDER_REF_FIELDS);
   const customerVpa = pick(fields.lookup, 'CUSTOMERVPA', 'customer_vpa', 'customervpa');
 
   return {

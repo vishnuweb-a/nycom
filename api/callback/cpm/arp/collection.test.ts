@@ -635,3 +635,192 @@ describe('.vercelignore keeps the test suite out of the deployment', () => {
     expect(ignored).toContain(pattern);
   });
 });
+
+// ─── The native Airpay envelope, end to end ─────────────────────────────────
+
+/**
+ * `{ merchant_id, response }` — the shape the live gateway actually posts.
+ *
+ * Two real deliveries reached this URL and both were logged
+ * `payment.callback.unparseable`: one under `application/json` (Airpay's IPN),
+ * one under `application/x-www-form-urlencoded` (the customer's browser). The
+ * request arrived, the body hydrated, the fields decoded — and the envelope
+ * step then dropped the callback, so settlement never ran and KKChat never saw
+ * it.
+ *
+ * These run the real parser and the real settlement against the stubbed
+ * gateway, so what they pin is the wiring: that this shape now reaches
+ * `settleOrder`, and that reaching it changes nothing about who decides the
+ * payment.
+ */
+describe('POST /callback/cpm/arp/collection — the native { merchant_id, response } envelope', () => {
+  const seal = async (fields: Record<string, string> = { ...CALLBACK }) =>
+    (await import('../../../_lib/airpay.js')).encrypt(fields);
+
+  const native = async (fields?: Record<string, string>) => ({
+    merchant_id: '366950',
+    response: await seal(fields),
+  });
+
+  it('settles the IPN leg posted as application/json', async () => {
+    const captured = await post({
+      body: await native(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('paid');
+    expect(rows[0]?.ap_transactionid).toBe('AP-REAL-1');
+    expect(captured.body).toEqual({ received: true, outcome: 'paid' });
+  });
+
+  it('settles the browser leg posted as application/x-www-form-urlencoded', async () => {
+    const form = new URLSearchParams(await native()).toString();
+
+    const captured = await post({
+      body: form,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('paid');
+    expect(captured.body).toEqual({ received: true, outcome: 'paid' });
+  });
+
+  /*
+   * The rule the whole integration rests on, restated for the new shape. The
+   * envelope is sealed by Airpay and says SUCCESS; the gateway, asked directly,
+   * says otherwise. The gateway wins.
+   */
+  it('does not let a sealed TRANSACTIONSTATUS=200 mark the order paid', async () => {
+    gatewaySays = { transactionStatus: 400, amount: 81 };
+
+    const captured = await post({
+      body: await native({ ...CALLBACK, TRANSACTIONSTATUS: '200', MESSAGE: 'SUCCESS' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('failed');
+    expect(captured.body).toEqual({ received: true, outcome: 'failed' });
+  });
+
+  it('leaves the order untouched when the gateway cannot be read', async () => {
+    gatewaySays = null;
+
+    const captured = await post({
+      body: await native(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(captured.body).toEqual({ received: true, outcome: 'pending' });
+  });
+
+  it('holds the order for review when the gateway settled a different amount', async () => {
+    gatewaySays = { transactionStatus: 200, amount: 1 };
+
+    const captured = await post({
+      body: await native(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('requires_review');
+    expect(captured.body).toEqual({ received: true, outcome: 'amount_mismatch' });
+  });
+
+  it('fails closed on a sealed payload whose ap_SecureHash does not check out', async () => {
+    const captured = await post({
+      body: await native({ ...CALLBACK, ap_SecureHash: '1' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(captured.body).toEqual({ received: true, outcome: 'hash_mismatch' });
+  });
+
+  it('refuses an envelope addressed to another merchant, without settling or relaying', async () => {
+    const captured = await post({
+      body: { merchant_id: '999999', response: await seal() },
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(captured.body).toEqual({ received: true });
+  });
+
+  it('refuses an envelope it cannot open, without settling or relaying', async () => {
+    const captured = await post({
+      body: { merchant_id: '366950', response: 'not-an-airpay-envelope' },
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('initiated');
+    expect(transitions).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(captured.status).toBe(200);
+    expect(captured.body).toEqual({ received: true });
+  });
+
+  it('settles exactly once across a repeated delivery of the same envelope', async () => {
+    const first = await post({
+      body: await native(),
+      headers: { 'content-type': 'application/json' },
+    });
+    const second = await post({
+      body: await native(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(transitions).toBe(1);
+    expect(first.body).toEqual({ received: true, outcome: 'paid' });
+    expect(second.body).toEqual({ received: true, outcome: 'already_settled' });
+  });
+
+  it('relays the decrypted fields to KKChat, and only after settlement', async () => {
+    const sequence: string[] = [];
+
+    fetchMock.mockImplementation(() => {
+      sequence.push(`relay:${rows[0]?.payment_status ?? 'gone'}`);
+
+      return Promise.resolve({ ok: true, status: 200 });
+    });
+
+    const body = await native();
+
+    await post({ body, headers: { 'content-type': 'application/json' } });
+
+    expect(sequence).toEqual(['relay:paid']);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+
+    expect(url).toBe('https://kkchat.in/callback/cpm/arp_frontiva/collection');
+    expect(JSON.parse(init.body as string)).toEqual(CALLBACK);
+    // The sealed blob is not what KKChat receives.
+    expect(init.body as string).not.toContain(body.response);
+  });
+
+  it('redirects the browser leg to the success page after settling it server-side', async () => {
+    const captured = await post({
+      body: await native(),
+      headers: { ...BROWSER_HEADERS, 'content-type': 'application/x-www-form-urlencoded' },
+    });
+
+    expect(captured.status).toBe(303);
+    expect(captured.location).toBe(
+      'https://www.yarnvia.online/order-success?ref=YV-3200A-2AB47227&t=read-key-1',
+    );
+    expect(rows[0]?.payment_status).toBe('paid');
+  });
+
+  it('reaches the same settlement through the internal route', async () => {
+    const captured = await invoke(await internalRoute(), {
+      body: await native(),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(rows[0]?.payment_status).toBe('paid');
+    expect(captured.body).toEqual({ received: true, outcome: 'paid' });
+  });
+});

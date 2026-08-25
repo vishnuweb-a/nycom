@@ -500,3 +500,333 @@ describe('describeCallbackRequest', () => {
     expect(fields.decodedKeys).toBe('(none)');
   });
 });
+
+/**
+ * The native Airpay callback envelope — `{ merchant_id, response }`.
+ *
+ * This is the shape the live gateway actually posts, and the shape that was
+ * being refused in production. Two real deliveries reached
+ * `/callback/cpm/arp/collection` and both were logged
+ * `payment.callback.unparseable` with `decodedKeys: merchant_id,response` —
+ * one under `application/json` (the IPN leg), one under
+ * `application/x-www-form-urlencoded` (the browser leg).
+ *
+ * The fixture below is not invented. Its field names are the ones from the real
+ * production Airpay IPN recorded in `docs/AIRPAY_YARNVIA_VERIFICATION.md` §6.3,
+ * and it is sealed with this repository's own `encrypt()` — the same AES-256-CBC
+ * envelope `decrypt()` opens — so nothing here asserts a cryptographic format
+ * that the production code does not already implement. `seal()` exists only to
+ * reach plaintexts `encrypt()` cannot express, and every use of it is checked
+ * against the real `decrypt()` first.
+ */
+describe('the native Airpay callback envelope', () => {
+  const MID = 'TESTMID';
+
+  /** Field names taken verbatim from the captured production IPN. */
+  const NATIVE = {
+    MERCID: MID,
+    TRANSACTIONID: 'YV-ABJ5T-3C1DDCEF',
+    APTRANSACTIONID: '2051234999',
+    AMOUNT: '81.00',
+    TRANSACTIONSTATUS: '200',
+    MESSAGE: 'Transaction Successful',
+    CUSTOMERVPA: 'someone@okbank',
+    ap_SecureHash: '1234567890',
+  } as const;
+
+  const envelope = async () => (await import('./callbackPayload.js')).parseCallbackEnvelope;
+
+  const sealed = async (fields: Record<string, string> = { ...NATIVE }) =>
+    (await import('./airpay.js')).encrypt(fields);
+
+  /** A request carrying a declared content type, as the live legs do. */
+  const typed = (body: unknown, contentType: string, query: unknown = {}): VercelRequest =>
+    ({ body, query, method: 'POST', headers: { 'content-type': contentType } }) as VercelRequest;
+
+  /**
+   * Seals an arbitrary plaintext into the documented envelope.
+   *
+   * `encrypt()` only takes a record and always emits JSON, so it cannot express
+   * a non-JSON plaintext. Rather than assert a format on trust, every fixture
+   * built here is first fed to the production `decrypt()` and required to come
+   * back byte-for-byte — so if the layout ever diverged from the real one, these
+   * tests would fail rather than quietly test a fiction.
+   */
+  const seal = async (plaintext: string): Promise<string> => {
+    const { createCipheriv, createHash, randomBytes } = await import('node:crypto');
+    const { decrypt } = await import('./airpay.js');
+
+    const key = Buffer.from(
+      createHash('md5').update('test-user~:~test-pass', 'utf8').digest('hex'),
+      'ascii',
+    );
+    const iv = randomBytes(8).toString('hex').slice(0, 16);
+    const cipher = createCipheriv('aes-256-cbc', key, Buffer.from(iv, 'ascii'));
+    const blob = iv + cipher.update(plaintext, 'utf8', 'base64') + cipher.final('base64');
+
+    // The guard: this fixture is only usable because the real decryptor opens it.
+    expect(decrypt(blob)).toBe(plaintext);
+
+    return blob;
+  };
+
+  // ── The two legs seen in production ───────────────────────────────────────
+
+  it('reads the IPN leg — application/json { merchant_id, response }', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const result = parseCallbackEnvelope(
+      typed({ merchant_id: MID, response: await sealed() }, 'application/json'),
+    );
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.apTransactionId).toBe('2051234999');
+    expect(result?.payload.amount).toBe('81.00');
+    expect(result?.payload.transactionStatus).toBe('200');
+    expect(result?.payload.message).toBe('Transaction Successful');
+    expect(result?.payload.customerVpa).toBe('someone@okbank');
+    expect(result?.payload.secureHash).toBe('1234567890');
+  });
+
+  it('reads the browser leg — form-urlencoded merchant_id and response', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const form = new URLSearchParams({ merchant_id: MID, response: await sealed() }).toString();
+
+    const result = parseCallbackEnvelope(typed(form, 'application/x-www-form-urlencoded'));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.amount).toBe('81.00');
+  });
+
+  it('reads the same envelope after the platform parsed the form into an object', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const result = parseCallbackEnvelope(
+      typed({ merchant_id: MID, response: await sealed() }, 'application/x-www-form-urlencoded'),
+    );
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+  });
+
+  /*
+   * `+` is a significant base64 character and is also how form encoding spells
+   * a space. A sender that does not percent-encode it hands us a blob with
+   * every `+` replaced by a space, and Node's base64 decoder then skips the
+   * whitespace instead of rejecting it — shortening the ciphertext silently.
+   */
+  it('recovers an envelope whose base64 + arrived as spaces', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    let blob = await sealed();
+
+    for (let attempt = 0; attempt < 60 && !blob.includes('+'); attempt += 1) {
+      blob = await sealed();
+    }
+
+    expect(blob).toContain('+');
+
+    // The un-encoded form body a naive sender produces, decoded as the platform
+    // would decode it.
+    const mangled = Object.fromEntries(new URLSearchParams(`merchant_id=${MID}&response=${blob}`));
+
+    expect(mangled.response).toContain(' ');
+    expect(mangled.response).not.toContain('+');
+
+    const result = parseCallbackEnvelope(typed(mangled, 'application/x-www-form-urlencoded'));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+  });
+
+  // ── Plaintext encodings ───────────────────────────────────────────────────
+
+  it('accepts a plaintext that is form-encoded rather than JSON', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await seal(new URLSearchParams({ ...NATIVE }).toString());
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }, 'application/json'));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+    expect(result?.payload.message).toBe('Transaction Successful');
+  });
+
+  it('forwards the decrypted fields to the relay, never the sealed blob', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const response = await sealed();
+
+    const result = parseCallbackEnvelope(typed({ merchant_id: MID, response }, 'application/json'));
+
+    expect(result?.fields).toEqual({ ...NATIVE });
+    expect(result?.fields.response).toBeUndefined();
+    expect(JSON.stringify(result?.fields)).not.toContain(response);
+  });
+
+  // ── Failing closed ────────────────────────────────────────────────────────
+
+  it('refuses a response that is not an envelope at all', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    expect(
+      parseCallbackEnvelope(typed({ merchant_id: MID, response: 'nonsense' }, 'application/json')),
+    ).toBeNull();
+  });
+
+  /*
+   * The shape of the open blocker: a well-formed envelope — 16 hexadecimal
+   * characters of IV, then block-aligned base64 — that this merchant's key does
+   * not open. It must be refused, and refused without falling back to anything.
+   */
+  it('refuses a well-formed envelope encrypted under a key we do not hold', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const { randomBytes } = await import('node:crypto');
+    const response = `509361e8503ab0a0${randomBytes(96).toString('base64')}`;
+
+    expect(
+      parseCallbackEnvelope(typed({ merchant_id: MID, response }, 'application/json')),
+    ).toBeNull();
+  });
+
+  /*
+   * The property the envelope handling exists to hold. An unreadable envelope
+   * used to fall through with no branch, leaving the outer plaintext fields in
+   * place — which is exactly the pairing an attacker wants: a captured blob
+   * beside fields of their own.
+   */
+  it('does not fall back to outer plaintext fields when the envelope will not open', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const result = parseCallbackEnvelope(
+      typed(
+        {
+          merchant_id: MID,
+          response: 'not-decryptable-by-anyone',
+          TRANSACTIONID: 'YV-ABJ5T-3C1DDCEF',
+          TRANSACTIONSTATUS: '200',
+          AMOUNT: '999999.00',
+        },
+        'application/json',
+      ),
+    );
+
+    expect(result).toBeNull();
+  });
+
+  // ── Merchant validation ───────────────────────────────────────────────────
+
+  it('refuses a callback addressed to another merchant', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    expect(
+      parseCallbackEnvelope(
+        typed({ merchant_id: '999999', response: await sealed() }, 'application/json'),
+      ),
+    ).toBeNull();
+  });
+
+  it('refuses a foreign merchant even on the query-string return leg', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    expect(
+      parseCallbackEnvelope(typed(undefined, '', { merchant_id: '999999', TRANSACTIONID: 'YV-1' })),
+    ).toBeNull();
+  });
+
+  it('still accepts a callback that states no merchant id, as the older shapes do', async () => {
+    const parseCallbackEnvelope = await envelope();
+
+    const result = parseCallbackEnvelope(typed({ ...NATIVE }, 'application/json'));
+
+    expect(result?.payload.orderRef).toBe('YV-ABJ5T-3C1DDCEF');
+  });
+});
+
+/**
+ * The failure categories attached to `payment.callback.unparseable`.
+ *
+ * The production line carried `decodedKeys: merchant_id,response` and nothing
+ * else, and that is true of every way this shape can fail — an envelope that
+ * will not open, one that opens onto something unreadable, and one belonging to
+ * another merchant all decode to the same two field names. Each needs a
+ * different fix, and on a live gateway each wrong guess costs another real
+ * payment to observe.
+ */
+describe('describeCallbackRequest — decode and parser failure categories', () => {
+  const MID = 'TESTMID';
+
+  const describe_ = async () => (await import('./callbackPayload.js')).describeCallbackRequest;
+
+  const typed = (body: unknown, contentType = 'application/json'): VercelRequest =>
+    ({
+      body,
+      query: {},
+      method: 'POST',
+      headers: { 'content-type': contentType },
+    }) as VercelRequest;
+
+  it('names an envelope that would not open', async () => {
+    const describeCallbackRequest = await describe_();
+
+    const fields = describeCallbackRequest(typed({ merchant_id: MID, response: 'nope' }));
+
+    expect(fields.envelope).toBe('unreadable');
+    expect(fields.parserFailure).toBe('envelope_unreadable');
+    expect(fields.merchantCheck).toBe('match');
+  });
+
+  it('names a callback belonging to another merchant', async () => {
+    const describeCallbackRequest = await describe_();
+
+    const fields = describeCallbackRequest(typed({ merchant_id: '999999', response: 'nope' }));
+
+    expect(fields.merchantCheck).toBe('mismatch');
+    expect(fields.parserFailure).toBe('merchant_mismatch');
+  });
+
+  it('names a plaintext body that simply has no order reference', async () => {
+    const describeCallbackRequest = await describe_();
+
+    const fields = describeCallbackRequest(typed({ AMOUNT: '81.00' }));
+
+    expect(fields.envelope).toBe('absent');
+    expect(fields.parserFailure).toBe('no_order_reference');
+  });
+
+  it('reports success for an envelope that opened', async () => {
+    const { encrypt } = await import('./airpay.js');
+    const describeCallbackRequest = await describe_();
+
+    const fields = describeCallbackRequest(
+      typed({ merchant_id: MID, response: encrypt({ TRANSACTIONID: 'YV-OK-0001' }) }),
+    );
+
+    expect(fields.envelope).toBe('decrypted');
+    expect(fields.parserFailure).toBe('none');
+  });
+
+  /*
+   * The categories are the whole point, and they must not smuggle a value out
+   * with them: not the ciphertext, and not one byte of the plaintext behind it.
+   */
+  it('never emits the sealed blob or anything decrypted from it', async () => {
+    const { encrypt } = await import('./airpay.js');
+    const describeCallbackRequest = await describe_();
+
+    const response = encrypt({
+      TRANSACTIONID: 'YV-SECRET-0001',
+      CUSTOMERVPA: 'someone@okbank',
+      CUSTOMEREMAIL: 'someone@example.com',
+    });
+
+    const emitted = JSON.stringify(describeCallbackRequest(typed({ merchant_id: MID, response })));
+
+    expect(emitted).not.toContain(response);
+    expect(emitted).not.toContain('YV-SECRET-0001');
+    expect(emitted).not.toContain('someone@okbank');
+    expect(emitted).not.toContain('someone@example.com');
+    // Only the outer field names, which are not secrets.
+    expect(emitted).toContain('merchant_id,response');
+  });
+});
