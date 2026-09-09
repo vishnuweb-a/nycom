@@ -14,6 +14,7 @@
     "typecheck": "tsc -b --noEmit",
     "seed": "node --env-file=.env scripts/seed.mjs",
     "seed:women-jeans": "node --env-file=.env scripts/seed-women-jeans.mjs",
+    "seed:women-shorts-skirts": "node --env-file=.env scripts/seed-women-shorts-skirts.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
