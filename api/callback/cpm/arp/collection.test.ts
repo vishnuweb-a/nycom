@@ -602,11 +602,25 @@ describe('vercel.json routes the public callback to this function', () => {
     },
   );
 
-  it('keeps an SPA catch-all that excludes the api namespace', () => {
+  it('keeps an SPA catch-all that excludes the api and assets namespaces', () => {
     expect(CATCH_ALL).toBeGreaterThanOrEqual(0);
+
+    // Asserted by matching the pattern rather than its literal text, so the
+    // lookahead can gain exclusions without this breaking.
+    const catchAll = new RegExp(`^${config.rewrites[CATCH_ALL].source}$`);
+
     // Without the negative lookahead the catch-all would swallow every
     // function route, not just this one.
-    expect(config.rewrites[CATCH_ALL].source).toContain('(?!api/)');
+    expect(catchAll.test('/api/callback/cpm/arp/collection')).toBe(false);
+
+    // A deleted hashed chunk must 404 rather than be answered with index.html
+    // under `Content-Type: text/html`, which fails the module MIME check and
+    // reports as a script error instead of a stale deploy.
+    expect(catchAll.test('/assets/Home-OLDHASH.js')).toBe(false);
+
+    // Real application routes must still reach the SPA shell.
+    expect(catchAll.test('/products/example')).toBe(true);
+    expect(catchAll.test('/non-existent-route')).toBe(true);
   });
 });
 

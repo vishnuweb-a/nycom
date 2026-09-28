@@ -3,6 +3,7 @@ import { isRouteErrorResponse, Link, useRouteError } from 'react-router';
 import { Button, buttonVariants } from '@/components/buttons/Button';
 import { Container } from '@/components/common/Container';
 import { ROUTES } from '@/constants/routes';
+import { isChunkLoadError, recoverFromChunkError } from '@/utils/chunkRecovery';
 
 /**
  * Catches render, loader and action failures for every route.
@@ -10,13 +11,21 @@ import { ROUTES } from '@/constants/routes';
  * Guarantees the "never leave blank screens" rule from guildline.md: a thrown
  * error yields a recoverable page rather than an unmounted white document.
  * Chunk-load failures — common after a deploy invalidates a lazy chunk mid
- * session — are recovered with a hard reload rather than a generic message.
+ * session — are recovered with a single automatic reload; see
+ * `utils/chunkRecovery.ts` for why the attempt is capped.
  */
 export const RouteErrorBoundary = () => {
   const error = useRouteError();
 
-  const isChunkLoadFailure =
-    error instanceof Error && /dynamically imported module|Loading chunk/i.test(error.message);
+  // Runs during render rather than in an effect: the reload should start before
+  // the shopper is shown an error page they do not need to read. When recovery
+  // is unavailable (already attempted, or storage blocked) this is a no-op and
+  // the message below explains the manual reload.
+  if (recoverFromChunkError(error)) {
+    return null;
+  }
+
+  const isChunkLoadFailure = isChunkLoadError(error);
 
   const message = isRouteErrorResponse(error)
     ? `${String(error.status)} — ${error.statusText}`

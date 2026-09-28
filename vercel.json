@@ -12,7 +12,7 @@
       "source": "/callback/cpm/arp/collection/",
       "destination": "/api/callback/cpm/arp/collection"
     },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/((?!api/|assets/).*)", "destination": "/index.html" }
   ],
   "crons": [{ "path": "/api/payments/reconcile", "schedule": "0 3 * * *" }],
   "headers": [
