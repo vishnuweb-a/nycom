@@ -27,6 +27,9 @@ const cartItemSchema = z.object({
   unitPrice: z.number().nonnegative(),
   discountPrice: z.number().nonnegative(),
   stock: z.number().int().nonnegative(),
+  // Optional: carts written before this field existed must still parse rather
+  // than being discarded wholesale. Absent reads as non-exempt.
+  shippingExempt: z.boolean().optional(),
 });
 
 const cartSchema = z.array(cartItemSchema);

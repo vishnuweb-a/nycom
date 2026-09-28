@@ -50,6 +50,8 @@ export interface PricedItem {
   readonly quantity: number;
   readonly unitPrice: number;
   readonly discountPrice: number;
+  /** Mirrors `products.shipping_exempt`. Read from the catalogue, never the client. */
+  readonly shippingExempt: boolean;
 }
 
 export interface PricedOrder {
@@ -77,6 +79,7 @@ interface ProductRow {
   readonly variants:
     | readonly { readonly size?: string; readonly quantity?: number; readonly stock?: string }[]
     | null;
+  readonly shipping_exempt: boolean | null;
 }
 
 /** Rounds to paisa. Float arithmetic must not leave ₹1499.0000000002 in a total. */
@@ -104,7 +107,9 @@ export const priceOrder = async (lines: readonly ProposedLine[]): Promise<Priced
 
   const { data, error } = await db()
     .from('products')
-    .select('id, slug, title, brand, price, discount_price, images, thumbnail, variants')
+    .select(
+      'id, slug, title, brand, price, discount_price, images, thumbnail, variants, shipping_exempt',
+    )
     .in('id', productIds)
     .eq('active', true);
 
@@ -178,11 +183,28 @@ export const priceOrder = async (lines: readonly ProposedLine[]): Promise<Priced
       quantity,
       unitPrice,
       discountPrice,
+      // The catalogue decides this, exactly as it decides the price. A client
+      // that sends `shipping_exempt` is sending a field nothing ever reads.
+      shippingExempt: product.shipping_exempt === true,
     });
   }
 
+  /*
+   * The exemption is deliberately unanimous rather than contagious.
+   *
+   * `every`, not `some`: one exempt line in a basket of normal goods must not
+   * waive their delivery cost, or the exempt product becomes a free-shipping
+   * voucher anyone can add to their cart. Only a basket that is entirely
+   * exempt ships free below the threshold.
+   *
+   * `items` is non-empty here — a zero-line basket was rejected above — so the
+   * vacuous-truth case `[].every(...) === true` cannot be reached.
+   */
+  const allItemsShippingExempt = items.every((item) => item.shippingExempt);
+
   // Identical rule to calculateOrderSummary, over the same imported constants.
-  const shipping = total === 0 || total >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+  const shipping =
+    total === 0 || total >= FREE_SHIPPING_THRESHOLD || allItemsShippingExempt ? 0 : SHIPPING_FEE;
   const grandTotal = toPaisa(total + shipping);
 
   if (grandTotal <= 0) {

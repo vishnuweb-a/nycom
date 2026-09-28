@@ -13,7 +13,7 @@ import type { Product } from '@/types/product';
  */
 const VALIDATION_COLUMNS = `
   id, slug, title, brand, price, discount_price,
-  images, thumbnail, variants, active
+  images, thumbnail, variants, active, shipping_exempt
 `;
 
 export const getCartProducts = async (

@@ -75,6 +75,7 @@ export const toCartItem = (
     unitPrice: product.price,
     discountPrice: effectivePrice(product),
     stock: variant.stock === 'in_stock' ? variant.quantity : 0,
+    shippingExempt: product.shipping_exempt,
   };
 };
 
@@ -114,6 +115,7 @@ export const reconcileCart = (
       unitPrice: product.price,
       discountPrice: livePrice,
       stock: variant === undefined || variant.stock !== 'in_stock' ? 0 : variant.quantity,
+      shippingExempt: product.shipping_exempt,
     };
 
     const issues: CartLineIssue[] = [];
@@ -159,13 +161,31 @@ export const calculateOrderSummary = (lines: readonly ReconciledLine[]): OrderSu
   const payable = lines.filter((line) => line.purchasable).map((line) => line.item);
   const { subtotal, total, savings } = calculateTotals(payable);
 
-  const shipping = total === 0 || total >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+  /*
+   * Mirrors the rule in `api/_lib/pricing.ts`, which is authoritative — this
+   * figure is only what the shopper is shown. `every`, not `some`: one exempt
+   * line must not waive shipping for a basket of normal goods. An empty basket
+   * would satisfy `every` vacuously, so the `total === 0` case is handled
+   * first and settles it at zero regardless.
+   *
+   * A line persisted before the field existed reads `undefined` and counts as
+   * non-exempt, so an old cart can never quote free shipping the server will
+   * not honour.
+   */
+  const allItemsShippingExempt =
+    payable.length > 0 && payable.every((item) => item.shippingExempt === true);
+
+  const shipping =
+    total === 0 || total >= FREE_SHIPPING_THRESHOLD || allItemsShippingExempt ? 0 : SHIPPING_FEE;
 
   return {
     subtotal,
     savings,
     shipping,
     grandTotal: total + shipping,
-    freeShippingShortfall: Math.max(0, FREE_SHIPPING_THRESHOLD - total),
+    // An exempt basket already ships free, so there is nothing to add towards.
+    freeShippingShortfall: allItemsShippingExempt
+      ? 0
+      : Math.max(0, FREE_SHIPPING_THRESHOLD - total),
   };
 };

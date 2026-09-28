@@ -58,6 +58,12 @@ export interface Product {
   readonly rating: number;
   readonly review_count: number;
 
+  /**
+   * When true, a basket made up entirely of such products ships free, whatever
+   * the total. Normal goods leave this false and keep the threshold rule.
+   */
+  readonly shipping_exempt: boolean;
+
   // Display flags
   readonly featured: boolean;
   readonly top_selling: boolean;

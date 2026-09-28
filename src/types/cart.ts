@@ -23,6 +23,15 @@ export interface CartItem {
   discountPrice: number;
   /** Units available for this size, used to clamp quantity. */
   stock: number;
+  /**
+   * Mirrors `products.shipping_exempt` for the summary panel.
+   *
+   * Optional because carts persisted by an earlier build predate the field;
+   * those lines read as `undefined` and are treated as non-exempt, which is the
+   * safe direction. `reconcileCart` refreshes it from the catalogue anyway, and
+   * the server never reads this value at all.
+   */
+  shippingExempt?: boolean | undefined;
 }
 
 /** Item-level money, recomputed from the lines on every change. */

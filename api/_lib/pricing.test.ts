@@ -37,6 +37,55 @@ const PRODUCT_B = {
   variants: [{ size: 'L', color: 'white', quantity: 3, stock: 'in_stock' }],
 };
 
+/** The shipping-exempt test product: ₹1, free size, deep stock. */
+const PRODUCT_EXEMPT = {
+  id: '44444444-4444-4444-8444-444444444444',
+  slug: 'yarnvia-test-product',
+  title: 'Yarnvia ₹1 Test Product',
+  brand: 'Yarnvia',
+  price: 1,
+  discount_price: 1,
+  images: [{ secure_url: 'https://res.cloudinary.com/x/test.jpg' }],
+  thumbnail: { secure_url: 'https://res.cloudinary.com/x/test.jpg' },
+  variants: [{ size: 'Free Size', color: 'Natural', quantity: 100, stock: 'in_stock' }],
+  shipping_exempt: true,
+};
+
+/** A second exempt row, so "every line exempt" can be tested across two lines. */
+const PRODUCT_EXEMPT_B = {
+  ...PRODUCT_EXEMPT,
+  id: '55555555-5555-4555-8555-555555555555',
+  slug: 'yarnvia-test-product-b',
+};
+
+/** A normal ₹500 product, for the mixed-basket case. */
+const PRODUCT_NORMAL_500 = {
+  id: '66666666-6666-4666-8666-666666666666',
+  slug: 'normal-five-hundred',
+  title: 'Normal Product',
+  brand: 'Yarnvia',
+  price: 500,
+  discount_price: null,
+  images: [],
+  thumbnail: null,
+  variants: [{ size: 'M', color: 'blue', quantity: 10, stock: 'in_stock' }],
+  shipping_exempt: false,
+};
+
+/** A normal ₹1 product — the regression guard for case 1. */
+const PRODUCT_NORMAL_1 = {
+  id: '77777777-7777-4777-8777-777777777777',
+  slug: 'normal-one-rupee',
+  title: 'Normal Cheap Product',
+  brand: 'Yarnvia',
+  price: 1,
+  discount_price: null,
+  images: [],
+  thumbnail: null,
+  variants: [{ size: 'Free Size', color: 'Natural', quantity: 50, stock: 'in_stock' }],
+  shipping_exempt: false,
+};
+
 let catalogue: unknown[] = [];
 let queryError: { message: string } | null = null;
 
@@ -55,7 +104,14 @@ vi.mock('./db.js', () => ({
 beforeAll(() => {
   process.env.SUPABASE_URL = 'https://example.supabase.co';
   process.env.SUPABASE_SERVICE_ROLE = 'test-service-role';
-  catalogue = [PRODUCT_A, PRODUCT_B];
+  catalogue = [
+    PRODUCT_A,
+    PRODUCT_B,
+    PRODUCT_EXEMPT,
+    PRODUCT_EXEMPT_B,
+    PRODUCT_NORMAL_500,
+    PRODUCT_NORMAL_1,
+  ];
   queryError = null;
 });
 
@@ -237,6 +293,143 @@ describe('shipping rules match the storefront', () => {
 
     expect(499 * unitsToClear).toBeGreaterThanOrEqual(FREE_SHIPPING_THRESHOLD);
     expect(above.shipping).toBe(0);
+  });
+});
+
+/*
+ * Product-level shipping exemption.
+ *
+ * The rule is unanimous, not contagious: a basket ships free below the
+ * threshold only when every line is exempt. These cases pin both halves of
+ * that — the exemption working, and it failing to leak to normal goods.
+ */
+describe('shipping exemption', () => {
+  it('charges shipping on a normal product below the threshold', async () => {
+    const { priceOrder } = await pricing();
+
+    const result = await priceOrder([
+      { productId: PRODUCT_NORMAL_1.id, size: 'Free Size', quantity: 1 },
+    ]);
+
+    expect(result.subtotal).toBe(1);
+    expect(result.shipping).toBe(79);
+    expect(result.grandTotal).toBe(80);
+  });
+
+  it('waives shipping for a wholly exempt basket below the threshold', async () => {
+    const { priceOrder } = await pricing();
+
+    const result = await priceOrder([
+      { productId: PRODUCT_EXEMPT.id, size: 'Free Size', quantity: 1 },
+    ]);
+
+    expect(result.subtotal).toBe(1);
+    expect(result.shipping).toBe(0);
+    expect(result.grandTotal).toBe(1);
+  });
+
+  it('leaves the threshold rule alone for normal baskets at or above it', async () => {
+    const { priceOrder } = await pricing();
+
+    // 500 × 3 = 1500, clearing 999 the ordinary way.
+    const result = await priceOrder([{ productId: PRODUCT_NORMAL_500.id, size: 'M', quantity: 3 }]);
+
+    expect(result.shipping).toBe(0);
+    expect(result.grandTotal).toBe(1500);
+  });
+
+  /*
+   * The anti-exploit case. If this ever reports ₹0 shipping, the exempt
+   * product has become a free-delivery voucher for the whole catalogue.
+   */
+  it('still charges shipping when an exempt item is mixed with a normal one', async () => {
+    const { priceOrder } = await pricing();
+
+    const result = await priceOrder([
+      { productId: PRODUCT_EXEMPT.id, size: 'Free Size', quantity: 1 },
+      { productId: PRODUCT_NORMAL_500.id, size: 'M', quantity: 1 },
+    ]);
+
+    expect(result.subtotal).toBe(501);
+    expect(result.shipping).toBe(79);
+    expect(result.grandTotal).toBe(580);
+  });
+
+  it('waives shipping across several exempt lines', async () => {
+    const { priceOrder } = await pricing();
+
+    const result = await priceOrder([
+      { productId: PRODUCT_EXEMPT.id, size: 'Free Size', quantity: 1 },
+      { productId: PRODUCT_EXEMPT_B.id, size: 'Free Size', quantity: 1 },
+    ]);
+
+    expect(result.subtotal).toBe(2);
+    expect(result.shipping).toBe(0);
+    expect(result.grandTotal).toBe(2);
+  });
+
+  it('waives shipping for several units of one exempt product', async () => {
+    const { priceOrder } = await pricing();
+
+    const result = await priceOrder([
+      { productId: PRODUCT_EXEMPT.id, size: 'Free Size', quantity: 2 },
+    ]);
+
+    expect(result.shipping).toBe(0);
+    expect(result.grandTotal).toBe(2);
+  });
+
+  it('leaves the empty-basket rejection unchanged', async () => {
+    const { priceOrder } = await pricing();
+
+    // Guards the vacuous-truth trap: `[].every(...)` is true, so an empty
+    // basket must be rejected before the exemption is ever consulted.
+    await expect(priceOrder([])).rejects.toThrow(/empty/i);
+  });
+
+  it('treats a product with no shipping_exempt column as non-exempt', async () => {
+    const { priceOrder } = await pricing();
+
+    // PRODUCT_B carries no such key at all, as a pre-migration row would not.
+    const result = await priceOrder([{ productId: PRODUCT_B.id, size: 'L', quantity: 1 }]);
+
+    expect(result.shipping).toBe(79);
+  });
+
+  it('reports the exemption on the priced line from the catalogue', async () => {
+    const { priceOrder } = await pricing();
+
+    const result = await priceOrder([
+      { productId: PRODUCT_EXEMPT.id, size: 'Free Size', quantity: 1 },
+      { productId: PRODUCT_NORMAL_500.id, size: 'M', quantity: 1 },
+    ]);
+
+    expect(result.items[0]?.shippingExempt).toBe(true);
+    expect(result.items[1]?.shippingExempt).toBe(false);
+  });
+
+  /*
+   * The security assertion, matching the one guarding price above. The
+   * exemption is a catalogue fact; a client claiming it changes nothing,
+   * because `priceOrder` reads the column and never the request.
+   */
+  it('ignores a shipping exemption the client tries to claim', async () => {
+    const { priceOrder } = await pricing();
+
+    const tampered = await priceOrder([
+      {
+        productId: PRODUCT_NORMAL_1.id,
+        size: 'Free Size',
+        quantity: 1,
+        shipping_exempt: true,
+        shippingExempt: true,
+        shipping: 0,
+      } as never,
+    ]);
+
+    expect(tampered.shipping).toBe(79);
+    expect(tampered.grandTotal).toBe(80);
+    expect(tampered.items[0]?.shippingExempt).toBe(false);
   });
 });
 

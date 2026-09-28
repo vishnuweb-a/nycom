@@ -14,7 +14,7 @@ const PRODUCT_COLUMNS = `
   id, title, subtitle, ribbon, description, images, thumbnail,
   price, discount_price, sku, weight_grams, track_quantity,
   category, gender, brand, collection, season, material, occasion,
-  variants, rating, review_count,
+  variants, rating, review_count, shipping_exempt,
   featured, top_selling, new_arrival, trending, active,
   slug, meta_title, meta_description,
   tags, created_at, updated_at
