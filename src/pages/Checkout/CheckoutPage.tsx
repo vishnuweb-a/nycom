@@ -21,7 +21,13 @@ import { DeliveryCard } from '@/pages/Checkout/sections/DeliveryCard';
 import { PaymentCard } from '@/pages/Checkout/sections/PaymentCard';
 import { appendOrder } from '@/lib/orderStorage';
 import { getCartProducts } from '@/services/cartValidation';
-import { createPayment, PaymentError, redirectToAirpay } from '@/services/payment';
+import { env } from '@/lib/env';
+import {
+  createPayment,
+  PaymentError,
+  redirectToAirpay,
+  redirectToSabPaisa,
+} from '@/services/payment';
 import type { PaymentMethod } from '@/types/order';
 import { calculateOrderSummary, reconcileCart } from '@/utils/cart';
 import { buildOrder } from '@/utils/order';
@@ -29,6 +35,20 @@ import { formatPrice } from '@/utils/format';
 
 /** Pause before the success page, so placing an order reads as work happening. */
 const PLACEMENT_DELAY_MS = 900;
+
+/**
+ * Which online gateway is preselected when the shopper picks "pay online".
+ *
+ * `VITE_PAYMENT_GATEWAY` is a PREFERENCE, not a kill switch: both gateways are
+ * always offered, and this only decides which radio is already marked when a
+ * shopper moves off Cash on Delivery. Switching the default is a redeploy;
+ * switching gateway for one order is a click, and neither hides the other.
+ *
+ * It is also not a permission. Each gateway's server endpoint re-prices the
+ * basket and signs its own request, so a tampered bundle cannot select a
+ * gateway that is not configured server-side, nor alter an amount.
+ */
+const DEFAULT_ONLINE_METHOD: PaymentMethod = env.VITE_PAYMENT_GATEWAY;
 
 /**
  * Single-page checkout — address, delivery, payment and summary on one screen.
@@ -43,10 +63,12 @@ const PLACEMENT_DELAY_MS = 900;
  *   is simulated on the client, the order is written to localStorage, and no
  *   server is involved. No money moves, so nothing needs verifying.
  *
- * - **Pay Online** hands off to the server. `/api/payments/create` re-prices
- *   the basket from the catalogue, records the authoritative order, and returns
- *   signed fields; the browser forwards them to Airpay's hosted page. Nothing
- *   here signs, encrypts, or decides an amount.
+ * - **Pay Online** hands off to the server, via one of two gateways the shopper
+ *   chooses between. Airpay's `/api/payments/create` re-prices the basket and
+ *   returns signed fields the browser forwards to Airpay's hosted page;
+ *   SabPaisa's `/api/payments/sabpaisa/create` re-prices it and answers with a
+ *   redirect straight to SabPaisa's. Nothing here signs, encrypts, or decides
+ *   an amount, on either path.
  */
 const CheckoutPage = () => {
   const { items, clearCart } = useCart();
@@ -153,6 +175,43 @@ const CheckoutPage = () => {
   const startOnlinePayment = async () => {
     const purchasable = lines.filter((line) => line.purchasable).map((line) => line.item);
 
+    /*
+     * SabPaisa hands off differently, and deliberately so.
+     *
+     * Routed on the shopper's SELECTED method, never on a build-time flag: the
+     * two gateways are offered side by side, and the branch below is the only
+     * thing separating them. There is no fall-through — an `airpay` selection
+     * cannot reach this block, and a `sabpaisa` selection returns before the
+     * Airpay path starts.
+     *
+     * There is no response to inspect here: the browser POSTs to our own
+     * endpoint, which re-prices the basket, creates the session and answers
+     * with a 303 to the hosted checkout. The `clientSecret` travels in that
+     * `Location` header and never enters this bundle, so it cannot be stored,
+     * logged or sent to analytics.
+     *
+     * The local order cache and the amount cross-check that the Airpay path
+     * performs below are therefore not possible — and not needed: the server
+     * has already persisted the order and the expected amount before it
+     * redirects, which is the record settlement actually consults. The success
+     * page identifies the order from the cookies that endpoint sets.
+     */
+    if (paymentMethod === 'sabpaisa') {
+      const started = redirectToSabPaisa(purchasable, getValues());
+
+      /*
+       * A suppressed handoff means a redirect is already in flight from an
+       * earlier click. Leave every flag as it was: `setPlaced(true)` here would
+       * disarm the empty-cart guard for a navigation that is not this call's to
+       * make.
+       */
+      if (started) {
+        setPlaced(true);
+      }
+
+      return;
+    }
+
     try {
       const payment = await createPayment(purchasable, getValues());
 
@@ -195,16 +254,23 @@ const CheckoutPage = () => {
     }
   };
 
+  /*
+   * Explicit dispatch, one branch per method and no fall-through: an
+   * unrecognised method does nothing rather than quietly taking the online
+   * path. `startOnlinePayment` then routes airpay/sabpaisa on the same value.
+   */
   const confirmOrder = () => {
-    setIsPlacing(true);
-
     if (paymentMethod === 'cod') {
+      setIsPlacing(true);
       placeCodOrder();
 
       return;
     }
 
-    void startOnlinePayment();
+    if (paymentMethod === 'airpay' || paymentMethod === 'sabpaisa') {
+      setIsPlacing(true);
+      void startOnlinePayment();
+    }
   };
 
   // An empty cart has nothing to check out; send the shopper back rather than
@@ -234,7 +300,12 @@ const CheckoutPage = () => {
           >
             <AddressForm register={register} errors={errors} />
             <DeliveryCard />
-            <PaymentCard value={paymentMethod} onChange={setPaymentMethod} disabled={isPlacing} />
+            <PaymentCard
+              value={paymentMethod}
+              onChange={setPaymentMethod}
+              preferredOnlineMethod={DEFAULT_ONLINE_METHOD}
+              disabled={isPlacing}
+            />
 
             {/* Submits the form so validation runs before the modal opens. */}
             <Button type="submit" fullWidth className="hidden md:inline-flex lg:hidden">

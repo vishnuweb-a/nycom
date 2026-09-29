@@ -49,7 +49,7 @@ export const ORDER_STATUS_SEQUENCE = [
 
 export type OrderStatus = (typeof ORDER_STATUS_SEQUENCE)[number] | 'cancelled';
 
-export type PaymentMethod = 'cod' | 'airpay';
+export type PaymentMethod = 'cod' | 'airpay' | 'sabpaisa';
 
 /**
  * Payment lifecycle, mirroring `orders.payment_status` in Supabase.
@@ -73,6 +73,12 @@ export type PaymentStatus =
 export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
   cod: 'Cash on Delivery',
   airpay: 'Paid online',
+  /*
+   * Deliberately the same wording as `airpay`. Which gateway processed a
+   * payment is Yarnvia's operational detail, not something a shopper reading
+   * their order history needs to distinguish.
+   */
+  sabpaisa: 'Paid online',
 };
 
 export interface Order {

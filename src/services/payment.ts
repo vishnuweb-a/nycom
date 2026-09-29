@@ -135,6 +135,115 @@ export const redirectToAirpay = (payment: CreatePaymentResponse): void => {
   form.submit();
 };
 
+// ─── SabPaisa ───────────────────────────────────────────────────────────────
+
+/**
+ * Guards against a double submission producing two payable sessions.
+ *
+ * Held only for the navigation window, not for the life of the page. The latch
+ * exists to swallow the second of two clicks a fraction of a second apart,
+ * while `form.submit()` is already navigating away — that pair is one customer
+ * action and must mint one `merchantTxnId`.
+ *
+ * It is released after `HANDOFF_LATCH_MS` because a shopper who comes *back* —
+ * cancelled at the gateway, hit the back button, returned to a failed payment —
+ * is making a genuinely new attempt. Latching permanently would leave the SPA
+ * with a Pay button that silently does nothing until a full page reload, which
+ * reads as a broken checkout. A deliberate retry SHOULD mint a fresh reference:
+ * the previous session is dead, and enquiry must stay unambiguous about which
+ * attempt it is answering.
+ *
+ * Note where the real protection lives. This is a UX guard against a fumbled
+ * double-click; it is not the integrity boundary. The server re-prices every
+ * request, and no duplicate session can ever be settled twice — settlement is
+ * keyed on `merchantTxnId` and is idempotent once terminal.
+ */
+let sabpaisaHandoffStarted = false;
+
+/** How long one handoff suppresses a repeat submission. */
+const HANDOFF_LATCH_MS = 10_000;
+
+/**
+ * Hands off to SabPaisa by POSTing a form to our own server.
+ *
+ * A form POST to `/api/payments/sabpaisa/create` rather than `fetch`, because
+ * the server answers with a 303 to SabPaisa's hosted checkout and the browser
+ * must *follow* that redirect as a navigation. That is the documented
+ * server-side approach, and it is what keeps the `clientSecret` out of this
+ * bundle entirely: the secret travels in a `Location` header the browser acts
+ * on, never in a response body this code could read, store or log.
+ *
+ * Note what this function does not have: a response to inspect. There is no
+ * payment id, no checkout URL and no client secret in the browser at any point.
+ *
+ * `sabpaisaHandoffStarted` is a module-level latch rather than component state
+ * because it must survive a re-render and cannot be reset by one. Every extra
+ * submission would mint a fresh `merchantTxnId` server-side and create a second
+ * payable session for a single customer action, so the second click must do
+ * nothing at all — for the duration of the handoff. See the latch's own note
+ * for why it is released afterwards rather than held forever.
+ *
+ * Returns whether the handoff was actually started, so a caller that was
+ * suppressed can leave its own UI state alone.
+ */
+export const redirectToSabPaisa = (
+  items: readonly CartItem[],
+  address: AddressFormValues,
+): boolean => {
+  if (sabpaisaHandoffStarted) {
+    return false;
+  }
+
+  sabpaisaHandoffStarted = true;
+
+  /*
+   * Released on a timer rather than never. If the navigation succeeds this
+   * page is gone and the timer is irrelevant; if it did not, the shopper is
+   * still here and must be able to try again.
+   */
+  window.setTimeout(() => {
+    sabpaisaHandoffStarted = false;
+  }, HANDOFF_LATCH_MS);
+
+  const form = document.createElement('form');
+
+  form.method = 'POST';
+  form.action = '/api/payments/sabpaisa/create';
+  form.style.display = 'none';
+
+  /*
+   * The basket is sent as JSON in a single field. Only the identity of each
+   * line travels — product, size, quantity — and deliberately no price,
+   * subtotal or total: the server re-prices from the catalogue, so there is
+   * nothing here for anyone to tamper with.
+   */
+  const payload = {
+    items: items.map((item) => ({
+      productId: item.productId,
+      size: item.selectedSize,
+      quantity: item.quantity,
+    })),
+    address,
+  };
+
+  const input = document.createElement('input');
+
+  input.type = 'hidden';
+  input.name = 'payload';
+  input.value = JSON.stringify(payload);
+  form.append(input);
+
+  document.body.append(form);
+  form.submit();
+
+  return true;
+};
+
+/** Test-only: clears the handoff latch between cases. */
+export const resetSabPaisaHandoffLatch = (): void => {
+  sabpaisaHandoffStarted = false;
+};
+
 // ─── Authoritative status ───────────────────────────────────────────────────
 
 export interface OrderStatusResponse {

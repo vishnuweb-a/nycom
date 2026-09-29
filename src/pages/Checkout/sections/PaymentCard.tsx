@@ -6,6 +6,14 @@ import { cn } from '@/utils/cn';
 interface PaymentCardProps {
   readonly value: PaymentMethod;
   readonly onChange: (method: PaymentMethod) => void;
+  /**
+   * Which gateway to list first, from `VITE_PAYMENT_GATEWAY`.
+   *
+   * Ordering only — both gateways are always rendered. Airpay is the fallback
+   * when nothing is configured, since it is the integration currently taking
+   * live payments.
+   */
+  readonly preferredOnlineMethod?: PaymentMethod;
   /** Locks the choice while a payment is being prepared. */
   readonly disabled?: boolean;
 }
@@ -17,26 +25,69 @@ const COD_BENEFITS = [
   'Available for your location',
 ] as const;
 
-const ONLINE_BENEFITS = [
+const AIRPAY_BENEFITS = [
   'UPI, cards and net banking',
   'Payment handled by Airpay',
   'Card details never reach us',
   'Instant order confirmation',
 ] as const;
 
+const SABPAISA_BENEFITS = [
+  'UPI, cards and net banking',
+  'Payment handled by SabPaisa',
+  'Card details never reach us',
+  'Instant order confirmation',
+] as const;
+
+/** The gateway wording shown under the fieldset, once a gateway is selected. */
+const GATEWAY_NOTE: Partial<Record<PaymentMethod, string>> = {
+  airpay:
+    'You will be taken to Airpay to complete payment. Yarnvia never sees or stores your card or UPI details.',
+  sabpaisa:
+    'You will be taken to SabPaisa to complete payment. Yarnvia never sees or stores your card or UPI details.',
+};
+
 /**
  * Payment method selection.
  *
- * Now a genuine choice, so it is a real radio group: two `<input type="radio">`
+ * A genuine choice, so it is a real radio group: `<input type="radio">`
  * elements sharing a name, wrapped in a `<fieldset>` with a `<legend>`. Arrow
- * keys move between them and the browser announces "1 of 2" — behaviour that
+ * keys move between them and the browser announces "1 of 3" — behaviour that
  * clickable `<div>`s would silently lose.
+ *
+ * Both gateways are offered side by side, deliberately. The build-time
+ * `VITE_PAYMENT_GATEWAY` value selects which one is *preselected*; it does not
+ * hide the other. A flag that swapped one provider for the other would mean the
+ * storefront could never offer a shopper a choice, and would make falling back
+ * to Airpay a redeploy rather than a click.
  *
  * Cash on Delivery remains the default. It is the method this storefront has
  * always supported, and defaulting to the option that takes money would be a
  * change nobody asked for.
  */
-export const PaymentCard = ({ value, onChange, disabled = false }: PaymentCardProps) => (
+/** The two online gateways, in their fixed presentation form. */
+const GATEWAYS = {
+  airpay: {
+    method: 'airpay',
+    title: 'Pay with Airpay',
+    benefits: AIRPAY_BENEFITS,
+  },
+  sabpaisa: {
+    method: 'sabpaisa',
+    title: 'Pay with SabPaisa',
+    benefits: SABPAISA_BENEFITS,
+  },
+} as const satisfies Record<
+  string,
+  { method: PaymentMethod; title: string; benefits: readonly string[] }
+>;
+
+export const PaymentCard = ({
+  value,
+  onChange,
+  preferredOnlineMethod = 'airpay',
+  disabled = false,
+}: PaymentCardProps) => (
   <section
     aria-labelledby="payment-method"
     className="rounded-card border border-border p-4 md:p-6"
@@ -73,23 +124,28 @@ export const PaymentCard = ({ value, onChange, disabled = false }: PaymentCardPr
         benefits={COD_BENEFITS}
       />
 
-      <PaymentOption
-        method="airpay"
-        checked={value === 'airpay'}
-        onChange={onChange}
-        icon={<CreditCard className="size-6" aria-hidden="true" />}
-        title="Pay Online"
-        description="UPI, credit or debit card, net banking or wallet."
-        badge={{ label: 'Secure', tone: 'primary' }}
-        benefits={ONLINE_BENEFITS}
-      />
+      {(preferredOnlineMethod === 'sabpaisa'
+        ? [GATEWAYS.sabpaisa, GATEWAYS.airpay]
+        : [GATEWAYS.airpay, GATEWAYS.sabpaisa]
+      ).map((gateway) => (
+        <PaymentOption
+          key={gateway.method}
+          method={gateway.method}
+          checked={value === gateway.method}
+          onChange={onChange}
+          icon={<CreditCard className="size-6" aria-hidden="true" />}
+          title={gateway.title}
+          description="UPI, credit or debit card, net banking or wallet."
+          badge={{ label: 'Secure', tone: 'primary' }}
+          benefits={gateway.benefits}
+        />
+      ))}
     </fieldset>
 
     <p className="mt-4 flex items-start gap-2 text-base text-secondary">
       <ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden="true" />
-      {value === 'cod'
-        ? 'Your order will be confirmed immediately. Payment will be collected by the delivery partner at the time of delivery.'
-        : 'You will be taken to Airpay to complete payment. Yarnvia never sees or stores your card or UPI details.'}
+      {GATEWAY_NOTE[value] ??
+        'Your order will be confirmed immediately. Payment will be collected by the delivery partner at the time of delivery.'}
     </p>
   </section>
 );

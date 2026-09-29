@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { db } from '../_lib/db.js';
 import { methodNotAllowed, PublicError, sendJson, withErrorHandling } from '../_lib/http.js';
+import { settleSabPaisaPayment } from '../_lib/sabpaisa/settle.js';
 import { settleOrder } from '../_lib/settle.js';
 
 /**
@@ -91,6 +92,43 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
    * still does the full Order Confirmation check, so this is not a shortcut:
    * it is the same trusted path, triggered by a different event.
    */
+  /*
+   * SabPaisa self-heals through its own settlement path, which enquires
+   * server-to-server and cross-checks the amount before anything is marked
+   * paid. It is kept strictly separate from `settleOrder` — that function
+   * speaks Airpay's Order Confirmation API and knows nothing about a SabPaisa
+   * reference.
+   */
+  if (!SETTLED.has(paymentStatus) && order.payment_method === 'sabpaisa') {
+    const { data: session } = await db()
+      .from('sabpaisa_payments')
+      .select('merchant_txn_id')
+      .eq('order_ref', order.order_ref)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const merchantTxnId = (session as { merchant_txn_id?: string } | null)?.merchant_txn_id;
+
+    if (merchantTxnId !== undefined) {
+      const result = await settleSabPaisaPayment(merchantTxnId);
+
+      if (result.outcome === 'paid') {
+        paymentStatus = 'paid';
+      } else if (result.outcome === 'failed' || result.outcome === 'expired') {
+        paymentStatus = result.outcome === 'failed' ? 'failed' : 'cancelled';
+      } else if (result.outcome === 'requires_review') {
+        paymentStatus = 'requires_review';
+      }
+      /*
+       * Every other outcome — `unconfirmed` above all — leaves `paymentStatus`
+       * untouched, so the page keeps showing "we are confirming your payment"
+       * rather than claiming either success or failure. `settled` stays false
+       * and the shopper keeps polling.
+       */
+    }
+  }
+
   if (!SETTLED.has(paymentStatus) && order.payment_method === 'airpay') {
     const result = await settleOrder({
       orderRef: order.order_ref,

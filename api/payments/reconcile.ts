@@ -4,7 +4,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { db } from '../_lib/db.js';
 import { serverEnv } from '../_lib/env.js';
 import { methodNotAllowed, PublicError, sendJson, withErrorHandling } from '../_lib/http.js';
-import { log } from '../_lib/log.js';
+import { errorMessage, log } from '../_lib/log.js';
+import { settleSabPaisaPayment } from '../_lib/sabpaisa/settle.js';
 import { settleOrder } from '../_lib/settle.js';
 
 /**
@@ -98,6 +99,51 @@ const authorize = (req: VercelRequest): void => {
   }
 };
 
+/**
+ * Sweeps SabPaisa payment sessions whose fate is still open.
+ *
+ * Keyed off `sabpaisa_payments`, not `orders`, because the session row carries
+ * the `merchantTxnId` that Transaction Enquiry is asked about, and because an
+ * order may have accumulated more than one attempt.
+ *
+ * `settleSabPaisaPayment` performs the full enquiry and cross-check, so a
+ * settlement reached here is verified exactly as strictly as one triggered by
+ * the customer's return.
+ */
+const sweepSabPaisa = async (now: number): Promise<Record<string, number>> => {
+  const { data, error } = await db()
+    .from('sabpaisa_payments')
+    .select('merchant_txn_id, created_at')
+    .in('status', ['created', 'redirected', 'unconfirmed'])
+    .lt('created_at', new Date(now - MIN_AGE_MS).toISOString())
+    .gt('created_at', new Date(now - MAX_AGE_MS).toISOString())
+    .order('created_at', { ascending: true })
+    .limit(BATCH_SIZE);
+
+  if (error !== null) {
+    throw new Error('sabpaisa_payments query failed');
+  }
+
+  const sessions = (data ?? []) as unknown as { readonly merchant_txn_id: string }[];
+  const tally: Record<string, number> = {};
+
+  for (const session of sessions) {
+    // No claimed status and no claimed amount is passed: enquiry decides alone.
+    const result = await settleSabPaisaPayment(session.merchant_txn_id);
+
+    tally[result.outcome] = (tally[result.outcome] ?? 0) + 1;
+  }
+
+  log.info('sabpaisa.reconcile.swept', {
+    examined: sessions.length,
+    paid: tally.paid ?? 0,
+    unconfirmed: tally.unconfirmed ?? 0,
+    requiresReview: tally.requires_review ?? 0,
+  });
+
+  return tally;
+};
+
 const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> => {
   if (req.method !== 'GET' && req.method !== 'POST') {
     methodNotAllowed(res, ['GET', 'POST']);
@@ -158,7 +204,30 @@ const handler = async (req: VercelRequest, res: VercelResponse): Promise<void> =
     requiresReview: outcomes.amount_mismatch ?? 0,
   });
 
-  sendJson(res, 200, { examined: stale.length, outcomes });
+  /*
+   * ── The SabPaisa sweep ──
+   *
+   * Run after the Airpay sweep and in its own try/catch, so a SabPaisa
+   * misconfiguration — a missing credential above all — cannot prevent Airpay
+   * orders from being reconciled. Airpay is taking real money; it does not wait
+   * on a second provider.
+   *
+   * This matters more for SabPaisa than for Airpay, because this integration
+   * deliberately has no webhook: the return leg and the success-page poll are
+   * the only other paths to a verdict, and both require the shopper's browser.
+   * A customer who pays and closes the tab is settled here or not at all.
+   */
+  let sabpaisa: Record<string, number> | { readonly skipped: string } = {};
+
+  try {
+    sabpaisa = await sweepSabPaisa(now);
+  } catch (sweepError) {
+    log.warn('sabpaisa.reconcile.skipped', { reason: errorMessage(sweepError) });
+
+    sabpaisa = { skipped: 'configuration_or_query_error' };
+  }
+
+  sendJson(res, 200, { examined: stale.length, outcomes, sabpaisa });
 };
 
 export default withErrorHandling('payment.reconcile', handler);
